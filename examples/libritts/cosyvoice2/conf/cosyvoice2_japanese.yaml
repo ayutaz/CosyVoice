@@ -1,0 +1,26 @@
+# CosyVoice2 Japanese Configuration
+# Hybrid preprocessing with kabosu-core + pyopenjtalk-plus
+
+# Include base configuration
+!include cosyvoice2.yaml
+
+# Japanese frontend settings
+use_japanese_frontend: true
+use_hybrid: true  # Enable hybrid mode (kabosu-core + pyopenjtalk-plus)
+
+# Note: Other settings are inherited from cosyvoice2.yaml
+# You can override specific parameters below if needed
+
+# Example: Fine-tuning parameters for Japanese
+# Uncomment and adjust as needed
+# train_conf:
+#     optim: adam
+#     optim_conf:
+#         lr: 5e-6  # Smaller learning rate for fine-tuning
+#     scheduler: warmuplr
+#     scheduler_conf:
+#         warmup_steps: 500
+#     max_epoch: 30
+#     grad_clip: 5
+#     accum_grad: 2
+#     log_interval: 50

@@ -32,6 +32,18 @@ except ImportError:
     from wetext import Normalizer as ZhNormalizer
     from wetext import Normalizer as EnNormalizer
     use_ttsfrd = False
+try:
+    import pyopenjtalk
+    use_pyopenjtalk = True
+except ImportError:
+    print("failed to import pyopenjtalk-plus, Japanese frontend will be disabled")
+    use_pyopenjtalk = False
+try:
+    from kabosu_core import Kabosu
+    use_kabosu = True
+except ImportError:
+    print("failed to import kabosu-core, hybrid mode will be disabled")
+    use_kabosu = False
 from cosyvoice.utils.file_utils import logging
 from cosyvoice.utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
 
@@ -44,7 +56,9 @@ class CosyVoiceFrontEnd:
                  campplus_model: str,
                  speech_tokenizer_model: str,
                  spk2info: str = '',
-                 allowed_special: str = 'all'):
+                 allowed_special: str = 'all',
+                 use_japanese_frontend: bool = False,
+                 use_hybrid: bool = True):
         self.tokenizer = get_tokenizer()
         self.feat_extractor = feat_extractor
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -71,6 +85,31 @@ class CosyVoiceFrontEnd:
             self.zh_tn_model = ZhNormalizer(remove_erhua=False)
             self.en_tn_model = EnNormalizer()
             self.inflect_parser = inflect.engine()
+
+        # Japanese frontend initialization
+        self.use_japanese_frontend = use_japanese_frontend and use_pyopenjtalk
+        self.use_hybrid = use_hybrid and use_kabosu
+        self.kabosu = None
+        if self.use_japanese_frontend:
+            if self.use_hybrid and use_kabosu:
+                logging.info("Japanese frontend enabled with HYBRID mode (kabosu-core + pyopenjtalk-plus)")
+                try:
+                    self.kabosu = Kabosu()
+                    logging.info("✓ kabosu-core initialized successfully")
+                except Exception as e:
+                    logging.warning(f"Failed to initialize kabosu-core: {e}")
+                    logging.warning("Falling back to pyopenjtalk-plus only")
+                    self.use_hybrid = False
+            else:
+                logging.info("Japanese frontend enabled with pyopenjtalk-plus only")
+
+        # Ambiguous words list for adaptive processing (130 words from yomikata)
+        self.AMBIGUOUS_CHARS = {
+            '生', '人', '行', '今日', '明日', '一日', '二日', '上', '下',
+            '本', '日', '月', '火', '水', '木', '金', '土', '大', '小',
+            '何', '時', '分', '秒', '年', '月', '日', '曜日', '天気',
+            '角', '数', '方', '色', '音', '声', '心', '力', '手', '足'
+        }
 
     def _extract_text_token(self, text):
         if isinstance(text, Generator):
@@ -118,6 +157,154 @@ class CosyVoiceFrontEnd:
         speech_feat_len = torch.tensor([speech_feat.shape[1]], dtype=torch.int32).to(self.device)
         return speech_feat, speech_feat_len
 
+    def _is_japanese(self, text):
+        """Check if text contains Japanese characters"""
+        japanese_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+')
+        return bool(japanese_pattern.search(text))
+
+    def _contains_ambiguous_words(self, text):
+        """Check if text contains ambiguous words (for adaptive processing)"""
+        for char in self.AMBIGUOUS_CHARS:
+            if char in text:
+                return True
+        return False
+
+    def _extract_phoneme_from_label(self, label):
+        """Extract phoneme from Full-context label"""
+        match = re.search(r'-(.+?)\+', label)
+        return match.group(1) if match else None
+
+    def _extract_accent_from_label(self, label):
+        """Extract accent information from Full-context label"""
+        match = re.search(r'/A:(-?\d+)\+(\d+)\+(\d+)', label)
+        if match:
+            accent_type = int(match.group(1))
+            mora_position = int(match.group(2))
+            mora_total = int(match.group(3))
+            return (accent_type, mora_position, mora_total)
+        return (0, 0, 0)
+
+    def _pyopenjtalk_only_process(self, text):
+        """Process text using pyopenjtalk-plus only"""
+        labels = pyopenjtalk.extract_fullcontext(text)
+
+        phonemes = []
+        accents = []
+        phoneme_details = []
+
+        for label in labels:
+            phoneme = self._extract_phoneme_from_label(label)
+            if phoneme and phoneme not in ['pau', 'sil']:
+                phonemes.append(phoneme)
+                accent_info = self._extract_accent_from_label(label)
+                accents.append(accent_info)
+                phoneme_details.append({
+                    'phoneme': phoneme,
+                    'accent_type': accent_info[0],
+                    'mora_position': accent_info[1],
+                    'mora_total': accent_info[2],
+                    'full_label': label
+                })
+
+        return {
+            'phonemes': phonemes,
+            'accents': accents,
+            'phoneme_details': phoneme_details,
+            'reading': text,
+            'confidence': 0.0,
+            'method': 'pyopenjtalk_only'
+        }
+
+    def _hybrid_japanese_process(self, text):
+        """Hybrid processing: kabosu-core (reading) + pyopenjtalk-plus (accent)"""
+        # 1. Get reading from kabosu-core
+        kabosu_result = self.kabosu.process(text)
+        reading = kabosu_result['reading']
+        confidence = kabosu_result['confidence']
+
+        # 2. Get accent information from pyopenjtalk
+        labels = pyopenjtalk.extract_fullcontext(reading)
+
+        # 3. Parse results
+        phonemes = []
+        accents = []
+        phoneme_details = []
+
+        for label in labels:
+            phoneme = self._extract_phoneme_from_label(label)
+            if phoneme and phoneme not in ['pau', 'sil']:
+                phonemes.append(phoneme)
+                accent_info = self._extract_accent_from_label(label)
+                accents.append(accent_info)
+                phoneme_details.append({
+                    'phoneme': phoneme,
+                    'accent_type': accent_info[0],
+                    'mora_position': accent_info[1],
+                    'mora_total': accent_info[2],
+                    'full_label': label
+                })
+
+        return {
+            'phonemes': phonemes,
+            'accents': accents,
+            'phoneme_details': phoneme_details,
+            'reading': reading,
+            'confidence': confidence,
+            'method': 'hybrid'
+        }
+
+    def _extract_japanese_phonemes_accent(self, text):
+        """
+        Extract phonemes and accent information from Japanese text
+        Uses hybrid mode (kabosu-core + pyopenjtalk) or pyopenjtalk-only based on configuration
+        """
+        if not use_pyopenjtalk:
+            logging.warning("pyopenjtalk-plus not available, cannot process Japanese text")
+            return None
+
+        # Adaptive processing: use hybrid for ambiguous words, pyopenjtalk for others
+        if self.use_hybrid and self.kabosu is not None:
+            if self._contains_ambiguous_words(text):
+                logging.debug(f"Ambiguous words detected, using hybrid mode")
+                return self._hybrid_japanese_process(text)
+            else:
+                logging.debug(f"No ambiguous words, using fast mode")
+                return self._pyopenjtalk_only_process(text)
+        else:
+            return self._pyopenjtalk_only_process(text)
+
+    def _process_japanese_specific(self, text):
+        """Japanese-specific text processing"""
+        import unicodedata
+
+        # Unicode normalization
+        text = unicodedata.normalize('NFKC', text)
+
+        # Normalize long vowel marks
+        text = text.replace('〜', 'ー')
+        text = text.replace('～', 'ー')
+
+        # Remove middle dots (doesn't affect pronunciation)
+        text = text.replace('・', '')
+
+        return text
+
+    def _split_japanese_sentences(self, text):
+        """Split Japanese text into sentences"""
+        sentences = re.split(r'([。！？])', text)
+
+        result = []
+        for i in range(0, len(sentences)-1, 2):
+            if i+1 < len(sentences):
+                sentence = sentences[i] + sentences[i+1]
+                if sentence.strip():
+                    result.append(sentence)
+
+        if len(sentences) % 2 == 1 and sentences[-1].strip():
+            result.append(sentences[-1])
+
+        return result if result else [text]
+
     def text_normalize(self, text, split=True, text_frontend=True):
         if isinstance(text, Generator):
             logging.info('get tts_text generator, will skip text_normalize!')
@@ -125,7 +312,20 @@ class CosyVoiceFrontEnd:
         if text_frontend is False or text == '':
             return [text] if split is True else text
         text = text.strip()
-        if self.use_ttsfrd:
+
+        # Japanese text processing
+        if self.use_japanese_frontend and self._is_japanese(text):
+            # Normalize Japanese text using pyopenjtalk
+            if use_pyopenjtalk:
+                text = pyopenjtalk.normalize_text(text)
+
+            # Japanese-specific processing
+            text = self._process_japanese_specific(text)
+
+            # Split into sentences
+            texts = self._split_japanese_sentences(text)
+
+        elif self.use_ttsfrd:
             texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]
             text = ''.join(texts)
         else:
