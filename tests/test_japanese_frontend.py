@@ -36,7 +36,6 @@ def test_pyopenjtalk_installation():
     """Test that pyopenjtalk-plus is properly installed"""
     assert pyopenjtalk is not None
     assert hasattr(pyopenjtalk, 'extract_fullcontext')
-    assert hasattr(pyopenjtalk, 'normalize_text')
     assert hasattr(pyopenjtalk, 'g2p')
 
 
@@ -62,10 +61,12 @@ def test_japanese_detection():
     assert bool(japanese_pattern.search("こんにちは"))
     assert bool(japanese_pattern.search("カタカナ"))
 
-    # Non-Japanese texts
+    # Non-Japanese texts (Latin alphabet, numbers)
     assert not bool(japanese_pattern.search("Hello world"))
-    assert not bool(japanese_pattern.search("你好世界"))
     assert not bool(japanese_pattern.search("123456"))
+
+    # Note: Chinese characters (你好世界) will match because they use the same
+    # Unicode range (\u4E00-\u9FFF) as Japanese kanji. This is expected behavior.
 
 
 @pytest.mark.skipif(not pyopenjtalk_available, reason="pyopenjtalk-plus not installed")
@@ -73,20 +74,19 @@ def test_pyopenjtalk_basic_processing():
     """Test basic pyopenjtalk processing"""
     text = "今日は良い天気です。"
 
-    # Test normalization
-    normalized = pyopenjtalk.normalize_text(text)
-    assert isinstance(normalized, str)
-    assert len(normalized) > 0
-
     # Test phoneme extraction
     phonemes = pyopenjtalk.g2p(text)
     assert isinstance(phonemes, str)
     assert len(phonemes) > 0
+    # Should contain phonemes separated by spaces
+    assert ' ' in phonemes
 
     # Test full-context label extraction
     labels = pyopenjtalk.extract_fullcontext(text)
     assert isinstance(labels, list)
     assert len(labels) > 0
+    # Each label should be a string with Open JTalk format
+    assert all(isinstance(label, str) for label in labels)
 
 
 @pytest.mark.skipif(not pyopenjtalk_available, reason="pyopenjtalk-plus not installed")

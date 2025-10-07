@@ -56,10 +56,6 @@ def test_japanese_frontend():
     for text in test_texts:
         print(f"Text: {text}")
 
-        # Normalize
-        normalized = pyopenjtalk.normalize_text(text)
-        print(f"  Normalized: {normalized}")
-
         # Extract phonemes
         phonemes = pyopenjtalk.g2p(text)
         print(f"  Phonemes: {phonemes}")
@@ -67,6 +63,10 @@ def test_japanese_frontend():
         # Extract full-context labels
         labels = pyopenjtalk.extract_fullcontext(text)
         print(f"  Full-context labels: {len(labels)} labels")
+
+        # Show first label as example
+        if labels:
+            print(f"  Example label: {labels[0][:80]}...")
         print()
 
     if hybrid_available:
@@ -99,7 +99,21 @@ def demo_frontend_usage():
     print("="*60)
 
     print("""
-# Example 1: Using pyopenjtalk-plus only
+# Example 1: Direct pyopenjtalk-plus usage
+import pyopenjtalk
+
+text = "今日は良い天気です。"
+
+# Extract phonemes
+phonemes = pyopenjtalk.g2p(text)
+print(f"Phonemes: {phonemes}")
+
+# Extract full-context labels (includes accent information)
+labels = pyopenjtalk.extract_fullcontext(text)
+print(f"Labels: {len(labels)} labels")
+
+
+# Example 2: Using CosyVoice frontend with Japanese support
 from cosyvoice.cli.frontend import CosyVoiceFrontEnd
 
 frontend = CosyVoiceFrontEnd(
@@ -113,30 +127,16 @@ frontend = CosyVoiceFrontEnd(
 
 # Process Japanese text
 text = "今日は良い天気です。"
-normalized = frontend.text_normalize(text)
-print(normalized)
+result = frontend.text_normalize(text, split=True)
+print(result)
 
 
-# Example 2: Using hybrid mode (kabosu-core + pyopenjtalk-plus)
-frontend_hybrid = CosyVoiceFrontEnd(
-    get_tokenizer=get_qwen_tokenizer,
-    feat_extractor=feat_extractor,
-    campplus_model='path/to/campplus.onnx',
-    speech_tokenizer_model='path/to/speech_tokenizer.onnx',
-    use_japanese_frontend=True,
-    use_hybrid=True  # Enable hybrid mode
-)
-
-# Process text with ambiguous words
-text = "彼は生で食べる。"  # "生" = "なま" (not "せい")
-normalized = frontend_hybrid.text_normalize(text)
-print(normalized)
-
-# The hybrid mode will automatically:
-# 1. Detect ambiguous words ("生")
-# 2. Use kabosu-core for high-accuracy reading (94%)
-# 3. Use pyopenjtalk-plus for accent information
-# 4. Return combined result
+# Example 3: Hybrid mode (when kabosu-core is available)
+# Hybrid mode automatically:
+# 1. Detects ambiguous words ("生", "人", "行", etc.)
+# 2. Uses kabosu-core for high-accuracy reading (94%)
+# 3. Uses pyopenjtalk-plus for accent information
+# 4. Returns combined result with better accuracy
     """)
 
 
