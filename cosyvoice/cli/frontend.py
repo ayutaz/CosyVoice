@@ -111,13 +111,114 @@ class CosyVoiceFrontEnd:
             '角', '数', '方', '色', '音', '声', '心', '力', '手', '足'
         }
 
+    def _convert_phonemes_to_hiragana(self, phonemes):
+        """Convert pyopenjtalk phonemes to hiragana for better tokenization"""
+        # Phoneme to hiragana mapping
+        phoneme_map = {
+            'a': 'あ', 'i': 'い', 'u': 'う', 'e': 'え', 'o': 'お',
+            'ka': 'か', 'ki': 'き', 'ku': 'く', 'ke': 'け', 'ko': 'こ',
+            'kya': 'きゃ', 'kyu': 'きゅ', 'kyo': 'きょ',
+            'ga': 'が', 'gi': 'ぎ', 'gu': 'ぐ', 'ge': 'げ', 'go': 'ご',
+            'gya': 'ぎゃ', 'gyu': 'ぎゅ', 'gyo': 'ぎょ',
+            'sa': 'さ', 'si': 'し', 'su': 'す', 'se': 'せ', 'so': 'そ',
+            'sha': 'しゃ', 'shu': 'しゅ', 'sho': 'しょ', 'sh': 'し',
+            'za': 'ざ', 'zi': 'じ', 'zu': 'ず', 'ze': 'ぜ', 'zo': 'ぞ',
+            'ja': 'じゃ', 'ju': 'じゅ', 'jo': 'じょ', 'j': 'じ',
+            'ta': 'た', 'ti': 'ち', 'tu': 'つ', 'te': 'て', 'to': 'と',
+            'cha': 'ちゃ', 'chu': 'ちゅ', 'cho': 'ちょ', 'ch': 'ち',
+            'tsu': 'つ', 'ts': 'つ',
+            'da': 'だ', 'di': 'ぢ', 'du': 'づ', 'de': 'で', 'do': 'ど',
+            'na': 'な', 'ni': 'に', 'nu': 'ぬ', 'ne': 'ね', 'no': 'の',
+            'nya': 'にゃ', 'nyu': 'にゅ', 'nyo': 'にょ',
+            'ha': 'は', 'hi': 'ひ', 'hu': 'ふ', 'he': 'へ', 'ho': 'ほ',
+            'hya': 'ひゃ', 'hyu': 'ひゅ', 'hyo': 'ひょ',
+            'ba': 'ば', 'bi': 'び', 'bu': 'ぶ', 'be': 'べ', 'bo': 'ぼ',
+            'bya': 'びゃ', 'byu': 'びゅ', 'byo': 'びょ',
+            'pa': 'ぱ', 'pi': 'ぴ', 'pu': 'ぷ', 'pe': 'ぺ', 'po': 'ぽ',
+            'pya': 'ぴゃ', 'pyu': 'ぴゅ', 'pyo': 'ぴょ',
+            'ma': 'ま', 'mi': 'み', 'mu': 'む', 'me': 'め', 'mo': 'も',
+            'mya': 'みゃ', 'myu': 'みゅ', 'myo': 'みょ',
+            'ya': 'や', 'yu': 'ゆ', 'yo': 'よ',
+            'ra': 'ら', 'ri': 'り', 'ru': 'る', 're': 'れ', 'ro': 'ろ',
+            'rya': 'りゃ', 'ryu': 'りゅ', 'ryo': 'りょ',
+            'wa': 'わ', 'wi': 'ゐ', 'we': 'ゑ', 'wo': 'を', 'w': 'わ',
+            'n': 'ん', 'N': 'ん',
+            'ky': 'き', 'gy': 'ぎ', 'ny': 'に', 'hy': 'ひ',
+            'by': 'び', 'py': 'ぴ', 'my': 'み', 'ry': 'り',
+            'k': 'く', 'g': 'ぐ', 's': 'す', 'z': 'ず',
+            't': 'と', 'd': 'ど', 'h': 'ふ', 'b': 'ぶ',
+            'p': 'ぷ', 'm': 'む', 'y': 'ゆ', 'r': 'る',
+            'v': 'ゔ',
+            # Devoiced vowels (capital letters in pyopenjtalk)
+            'A': 'あ', 'I': 'い', 'U': 'う', 'E': 'え', 'O': 'お',
+            'pau': '、', 'sil': '',
+        }
+
+        # Convert phoneme string to hiragana
+        phoneme_list = phonemes.split()
+        hiragana_list = []
+        i = 0
+        while i < len(phoneme_list):
+            matched = False
+
+            # Try to match longest phoneme sequence first (3, then 2, then 1)
+            for lookahead in [2, 1, 0]:
+                if i + lookahead < len(phoneme_list):
+                    if lookahead == 2:
+                        three_phoneme = phoneme_list[i] + phoneme_list[i+1] + phoneme_list[i+2]
+                        if three_phoneme in phoneme_map:
+                            hiragana_list.append(phoneme_map[three_phoneme])
+                            i += 3
+                            matched = True
+                            break
+                    elif lookahead == 1:
+                        two_phoneme = phoneme_list[i] + phoneme_list[i+1]
+                        if two_phoneme in phoneme_map:
+                            hiragana_list.append(phoneme_map[two_phoneme])
+                            i += 2
+                            matched = True
+                            break
+                    else:  # lookahead == 0
+                        phoneme = phoneme_list[i]
+                        if phoneme in phoneme_map:
+                            hiragana_list.append(phoneme_map[phoneme])
+                            i += 1
+                            matched = True
+                            break
+
+            if not matched:
+                # Unknown phoneme
+                phoneme = phoneme_list[i]
+                logging.debug(f'Unknown phoneme: {phoneme}')
+                # Keep as-is for debugging
+                i += 1
+
+        return ''.join(hiragana_list)
+
     def _extract_text_token(self, text):
         if isinstance(text, Generator):
             logging.info('get tts_text generator, will return _extract_text_token_generator!')
             # NOTE add a dummy text_token_len for compatibility
             return self._extract_text_token_generator(text), torch.tensor([0], dtype=torch.int32).to(self.device)
         else:
-            text_token = self.tokenizer.encode(text, allowed_special=self.allowed_special)
+            # Japanese text processing: convert to hiragana before tokenization
+            if self.use_japanese_frontend and self._is_japanese(text):
+                try:
+                    logging.info(f'Using Japanese frontend for tokenization: {text}')
+                    # Extract phonemes using pyopenjtalk
+                    phonemes = pyopenjtalk.g2p(text)
+                    # Convert phonemes to hiragana
+                    hiragana_text = self._convert_phonemes_to_hiragana(phonemes)
+                    logging.info(f'Phonemes: {phonemes}')
+                    logging.info(f'Hiragana: {hiragana_text}')
+                    text_to_encode = hiragana_text
+                except Exception as e:
+                    logging.warning(f'Japanese frontend failed: {e}, using original text')
+                    text_to_encode = text
+            else:
+                text_to_encode = text
+
+            text_token = self.tokenizer.encode(text_to_encode, allowed_special=self.allowed_special)
             text_token = torch.tensor([text_token], dtype=torch.int32).to(self.device)
             text_token_len = torch.tensor([text_token.shape[1]], dtype=torch.int32).to(self.device)
             return text_token, text_token_len
