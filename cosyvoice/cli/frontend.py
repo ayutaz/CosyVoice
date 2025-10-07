@@ -315,9 +315,9 @@ class CosyVoiceFrontEnd:
 
         # Japanese text processing
         if self.use_japanese_frontend and self._is_japanese(text):
-            # Normalize Japanese text using pyopenjtalk
-            if use_pyopenjtalk:
-                text = pyopenjtalk.normalize_text(text)
+            # Normalize Japanese text using Unicode normalization
+            import unicodedata
+            text = unicodedata.normalize('NFKC', text)
 
             # Japanese-specific processing
             text = self._process_japanese_specific(text)
