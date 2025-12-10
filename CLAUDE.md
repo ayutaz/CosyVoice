@@ -149,7 +149,7 @@ CosyVoice2は3つの主要モジュールから構成されています：
 2. 話者embedding（Campplus）統合
 3. プロンプト音声トークンの組み込み
 4. Bidirectional Streaming: テキストと音声を5:15の比率で混合
-5. fill_token (token_id=6563) でストリーミング制御
+5. fill_token でストリーミング制御（チャンク境界マーカー）
 6. 自己回帰生成: [SOS, embedding, text_tokens, task_id, prompt_tokens] → speech_tokens
 7. KVキャッシュで逐次生成
 8. RAS (Repetition Aware Sampling) で繰り返しを抑制
@@ -298,17 +298,15 @@ CosyVoice2の双方向ストリーミングは、超低遅延（150ms以下）�
 
 #### 3. 推論レベルのチャンク管理
 
-**パラメータ (cosyvoice/cli/model.py):**
-- `token_min_hop_len`: 最小チャンクサイズ (100トークン)
-- `token_max_hop_len`: 最大チャンクサイズ (200トークン)
-- `token_overlap_len`: オーバーラップ (20トークン)
-- `mel_overlap_len`: メルオーバーラップ（20フレーム）
+**パラメータ (cosyvoice/cli/model.py - CosyVoice2Model):**
+- `token_hop_len`: トークンホップ長 (25トークン)
+- `mel_cache_len`: メルキャッシュ長 (8フレーム)
 
 **処理フロー:**
-1. LLMが100-200トークン生成したらチャンク開始
-2. 20トークンのオーバーラップで前チャンクと連結
+1. LLMが25トークン生成するごとにチャンク処理
+2. mel_cache_lenフレームをキャッシュして連続性確保
 3. Flow/HiFiGANで音声化
-4. mel/waveformキャッシュでスムーズな接続
+4. キャッシュメカニズムでスムーズな接続
 
 #### 4. パフォーマンス指標
 
@@ -381,7 +379,8 @@ for model in llm flow hifigan; do
       --cv_data data/dev.data.list \
       --model $model \
       --checkpoint pretrained_models/CosyVoice2-0.5B/$model.pt \
-      --model_dir exp/cosyvoice2/$model/$train_engine \
+      --qwen_pretrain_path pretrained_models/CosyVoice2-0.5B/CosyVoice-BlankEN \
+      --model_dir `pwd`/exp/cosyvoice2/$model/$train_engine \
       --tensorboard_dir tensorboard/cosyvoice2/$model/$train_engine \
       --ddp.dist_backend nccl \
       --num_workers 2 \
@@ -409,8 +408,8 @@ done
 average_num=5
 for model in llm flow hifigan; do
     python cosyvoice/bin/average_model.py \
-      --dst_model exp/cosyvoice2/$model/$train_engine/${model}.pt \
-      --src_path exp/cosyvoice2/$model/$train_engine \
+      --dst_model `pwd`/exp/cosyvoice2/$model/$train_engine/${model}.pt \
+      --src_path `pwd`/exp/cosyvoice2/$model/$train_engine \
       --num ${average_num} \
       --val_best
 done

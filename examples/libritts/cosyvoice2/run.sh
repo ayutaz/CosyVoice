@@ -94,11 +94,11 @@ fi
 average_num=5
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
   for model in llm flow hifigan; do
-    decode_checkpoint=`pwd`/exp/cosyvoice/$model/$train_engine/${model}.pt
+    decode_checkpoint=`pwd`/exp/cosyvoice2/$model/$train_engine/${model}.pt
     echo "do model average and final checkpoint is $decode_checkpoint"
     python cosyvoice/bin/average_model.py \
       --dst_model $decode_checkpoint \
-      --src_path `pwd`/exp/cosyvoice/$model/$train_engine  \
+      --src_path `pwd`/exp/cosyvoice2/$model/$train_engine  \
       --num ${average_num} \
       --val_best
   done

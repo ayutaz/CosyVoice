@@ -64,9 +64,15 @@ def main():
         print("best val (epoch, step, loss, tag) = " +
               str(sorted_val_scores[:args.num]))
         path_list = [
-            args.src_path + '/epoch_{}_whole.pt'.format(score[0])
+            os.path.join(args.src_path, 'epoch_{}_whole.pt'.format(score[0]))
             for score in sorted_val_scores[:args.num]
         ]
+    else:
+        # Without --val_best, use the most recent checkpoints
+        checkpoints = glob.glob(os.path.join(args.src_path, 'epoch_*_whole.pt'))
+        checkpoints = sorted(checkpoints, key=lambda x: os.path.getmtime(x), reverse=True)
+        path_list = checkpoints[:args.num]
+        print("Using most recent {} checkpoints".format(len(path_list)))
     print(path_list)
     avg = {}
     num = args.num

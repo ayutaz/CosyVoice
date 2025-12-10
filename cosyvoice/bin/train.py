@@ -99,11 +99,13 @@ def main():
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
     # gan train has some special initialization logic
+    # NOTE: --model hifigan triggers GAN training mode, but the config uses 'hift' key
+    # The 'hift' key is removed from override_dict to ensure the hift config is loaded
     gan = True if args.model == 'hifigan' else False
 
     override_dict = {k: None for k in ['llm', 'flow', 'hift', 'hifigan'] if k != args.model}
     if gan is True:
-        override_dict.pop('hift')
+        override_dict.pop('hift')  # Keep hift config loaded when training hifigan
     try:
         with open(args.config, 'r') as f:
             configs = load_hyperpyyaml(f, overrides={**override_dict, 'qwen_pretrain_path': args.qwen_pretrain_path})

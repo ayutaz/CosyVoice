@@ -51,7 +51,7 @@ fi
 
 if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
   echo "Prepare required parquet format data, you should have prepared wav.scp/text/utt2spk/spk2utt/utt2embedding.pt/spk2embedding.pt/utt2speech_token.pt"
-  for x in train-clean-100 train-clean-360 train-other-500 dev-clean dev-other test-clean test-other; do
+  for x in train-clean-100 train-clean-360 train-other-500 train-clean-100_reject train-clean-360_reject dev-clean dev-other test-clean test-other; do
     mkdir -p data/$x/parquet
     tools/make_parquet_list.py --num_utts_per_parquet 1000 \
       --num_processes 10 \
@@ -106,11 +106,11 @@ fi
 average_num=5
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
   for model in llm flow hifigan; do
-    decode_checkpoint=`pwd`/exp/cosyvoice/$model/$train_engine/${model}.pt
+    decode_checkpoint=`pwd`/exp/cosyvoice2/$model/$train_engine/${model}.pt
     echo "do model average and final checkpoint is $decode_checkpoint"
     python cosyvoice/bin/average_model.py \
       --dst_model $decode_checkpoint \
-      --src_path `pwd`/exp/cosyvoice/$model/$train_engine  \
+      --src_path `pwd`/exp/cosyvoice2/$model/$train_engine  \
       --num ${average_num} \
       --val_best
   done
