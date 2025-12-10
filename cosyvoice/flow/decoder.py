@@ -15,6 +15,7 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as ckpt
 from einops import pack, rearrange, repeat
 from cosyvoice.utils.common import mask_to_bias
 from cosyvoice.utils.mask import add_optional_chunk_mask
@@ -305,15 +306,21 @@ class CausalConditionalDecoder(ConditionalDecoder):
         act_fn="snake",
         static_chunk_size=50,
         num_decoding_left_chunks=2,
+        gradient_checkpointing=False,
     ):
         """
         This decoder requires an input with the same shape of the target. So, if your text content
         is shorter or longer than the outputs, please re-sampling it before feeding to the decoder.
+
+        Args:
+            gradient_checkpointing: If True, use gradient checkpointing to reduce VRAM usage
+                during training at the cost of ~20% slower training. No effect during inference.
         """
         torch.nn.Module.__init__(self)
         channels = tuple(channels)
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.gradient_checkpointing = gradient_checkpointing
         self.time_embeddings = SinusoidalPosEmb(in_channels)
         time_embed_dim = channels[0] * 4
         self.time_mlp = TimestepEmbedding(
@@ -442,11 +449,20 @@ class CausalConditionalDecoder(ConditionalDecoder):
                 attn_mask = add_optional_chunk_mask(x, mask_down.bool(), False, False, 0, 0, -1).repeat(1, x.size(1), 1)
             attn_mask = mask_to_bias(attn_mask, x.dtype)
             for transformer_block in transformer_blocks:
-                x = transformer_block(
-                    hidden_states=x,
-                    attention_mask=attn_mask,
-                    timestep=t,
-                )
+                if self.gradient_checkpointing and self.training:
+                    x = ckpt.checkpoint(
+                        transformer_block,
+                        x,
+                        attn_mask,
+                        t,
+                        use_reentrant=False,
+                    )
+                else:
+                    x = transformer_block(
+                        hidden_states=x,
+                        attention_mask=attn_mask,
+                        timestep=t,
+                    )
             x = rearrange(x, "b t c -> b c t").contiguous()
             hiddens.append(x)  # Save hidden states for skip connections
             x = downsample(x * mask_down)
@@ -463,11 +479,20 @@ class CausalConditionalDecoder(ConditionalDecoder):
                 attn_mask = add_optional_chunk_mask(x, mask_mid.bool(), False, False, 0, 0, -1).repeat(1, x.size(1), 1)
             attn_mask = mask_to_bias(attn_mask, x.dtype)
             for transformer_block in transformer_blocks:
-                x = transformer_block(
-                    hidden_states=x,
-                    attention_mask=attn_mask,
-                    timestep=t,
-                )
+                if self.gradient_checkpointing and self.training:
+                    x = ckpt.checkpoint(
+                        transformer_block,
+                        x,
+                        attn_mask,
+                        t,
+                        use_reentrant=False,
+                    )
+                else:
+                    x = transformer_block(
+                        hidden_states=x,
+                        attention_mask=attn_mask,
+                        timestep=t,
+                    )
             x = rearrange(x, "b t c -> b c t").contiguous()
 
         for resnet, transformer_blocks, upsample in self.up_blocks:
@@ -482,11 +507,20 @@ class CausalConditionalDecoder(ConditionalDecoder):
                 attn_mask = add_optional_chunk_mask(x, mask_up.bool(), False, False, 0, 0, -1).repeat(1, x.size(1), 1)
             attn_mask = mask_to_bias(attn_mask, x.dtype)
             for transformer_block in transformer_blocks:
-                x = transformer_block(
-                    hidden_states=x,
-                    attention_mask=attn_mask,
-                    timestep=t,
-                )
+                if self.gradient_checkpointing and self.training:
+                    x = ckpt.checkpoint(
+                        transformer_block,
+                        x,
+                        attn_mask,
+                        t,
+                        use_reentrant=False,
+                    )
+                else:
+                    x = transformer_block(
+                        hidden_states=x,
+                        attention_mask=attn_mask,
+                        timestep=t,
+                    )
             x = rearrange(x, "b t c -> b c t").contiguous()
             x = upsample(x * mask_up)
         x = self.final_block(x, mask_up)
