@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Fetch CosyVoice
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Checkout PR tip
         run: |
           set -eux
