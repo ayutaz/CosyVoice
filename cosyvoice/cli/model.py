@@ -276,8 +276,9 @@ class CosyVoiceModel:
             self.mel_overlap_dict.pop(this_uuid)
             self.hift_cache_dict.pop(this_uuid)
             self.flow_cache_dict.pop(this_uuid)
+        # Note: empty_cache() removed for performance - it adds 10-50ms latency per inference
+        # Synchronize only when necessary for correctness
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
             torch.cuda.current_stream().synchronize()
 
 
@@ -428,6 +429,6 @@ class CosyVoice2Model(CosyVoiceModel):
             self.tts_speech_token_dict.pop(this_uuid)
             self.llm_end_dict.pop(this_uuid)
             self.hift_cache_dict.pop(this_uuid)
+        # Note: empty_cache() removed for performance - it adds 10-50ms latency per inference
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
             torch.cuda.current_stream().synchronize()
