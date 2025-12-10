@@ -51,6 +51,38 @@ sudo apt-get install sox libsox-dev
 sudo yum install sox sox-devel
 ```
 
+### macOS (Apple Silicon) での環境構築
+
+Apple Silicon (M1/M2/M3/M4) Macでは追加の依存パッケージが必要です：
+
+```bash
+# Python 3.10仮想環境の作成（onnxruntimeはPython 3.10が必要）
+uv venv --python 3.10 .venv
+source .venv/bin/activate
+
+# 基本依存パッケージのインストール（CUDAインデックスなし）
+uv pip install -r requirements.txt
+
+# macOS追加パッケージのインストール
+uv pip install hydra-core lightning wget pyworld
+```
+
+**MPS (Metal Performance Shaders) での推論:**
+
+```bash
+# 一部の演算子がMPSで未実装のため、CPUフォールバックが必要
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+
+# 推論実行
+python3 webui.py --port 50000 --model_dir pretrained_models/CosyVoice2-0.5B
+```
+
+**macOS固有の制限事項:**
+- `aten::unfold_backward`演算子がMPSで未実装（HiFiGANのiSTFTで使用）
+- ONNXRuntime はMPS非対応のためCPUで実行
+- vLLM は macOS 非対応（NVIDIA GPU必須）
+- DeepSpeed は macOS 非対応（`torch_ddp`を使用）
+
 ### モデルのダウンロード
 
 ```python

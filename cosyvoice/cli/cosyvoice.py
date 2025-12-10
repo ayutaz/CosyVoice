@@ -48,6 +48,8 @@ class CosyVoice:
         if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or fp16 is True):
             load_jit, load_trt, fp16, use_compile = False, False, False, False
             logging.warning('no cuda device, set load_jit/load_trt/fp16/use_compile to False')
+        if torch.backends.mps.is_available() is True:
+            load_jit = True
         self.model = CosyVoiceModel(configs['llm'], configs['flow'], configs['hift'], fp16, use_compile)
         self.model.load('{}/llm.pt'.format(model_dir),
                         '{}/flow.pt'.format(model_dir),
@@ -163,6 +165,8 @@ class CosyVoice2(CosyVoice):
         if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or fp16 is True):
             load_jit, load_trt, fp16, use_compile = False, False, False, False
             logging.warning('no cuda device, set load_jit/load_trt/fp16/use_compile to False')
+        if torch.backends.mps.is_available() is True:
+            load_jit = True
         self.model = CosyVoice2Model(configs['llm'], configs['flow'], configs['hift'], fp16, use_compile)
         self.model.load('{}/llm.pt'.format(model_dir),
                         '{}/flow.pt'.format(model_dir),
