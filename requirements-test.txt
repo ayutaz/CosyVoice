@@ -1,0 +1,7 @@
+# Test dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Dependencies for testing frontend_utils.py
+inflect>=7.0.0
+regex>=2023.0.0

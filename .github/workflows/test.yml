@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch CosyVoice
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Install test dependencies
+        run: uv pip install -r requirements-test.txt --system
+
+      - name: Run tests
+        run: uv run pytest tests/ -v --tb=short
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ --cov=cosyvoice/utils --cov-report=term-missing
