@@ -948,17 +948,11 @@ pip install ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl
 
 ### 必須事項
 
-1. **サブモジュール初期化:**
-   ```bash
-   git submodule update --init --recursive
-   ```
-   `third_party/Matcha-TTS`が必要
-
-2. **sys.path設定:**
+1. **sys.path設定:**
    ```python
    sys.path.append('third_party/Matcha-TTS')
    ```
-   全てのPythonスクリプトで必要
+   全てのPythonスクリプトで必要（Matcha-TTSはリポジトリに含まれています）
 
 ### モデル使用
 

@@ -56,9 +56,8 @@
 ### Clone and install
 
 ```sh
-git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git
+git clone https://github.com/FunAudioLLM/CosyVoice.git
 cd CosyVoice
-git submodule update --init --recursive
 ```
 
 ### 環境の構築
