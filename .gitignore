@@ -1,52 +1,46 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
 
-# Visual Studio Code files
-.vscode
-.vs
+# Virtual environments
+.venv/
+.venv_vllm/
+venv/
+ENV/
 
-# PyCharm files
-.idea
+# uv
+uv.lock
 
-# Eclipse Project settings
-*.*project
-.settings
-
-# Sublime Text settings
-*.sublime-workspace
-*.sublime-project
-
-# Editor temporaries
-*.swn
-*.swo
+# IDE
+.idea/
+.vscode/
 *.swp
-*.swm
-*~
+*.swo
 
-# IPython notebook checkpoints
-.ipynb_checkpoints
+# Jupyter
+.ipynb_checkpoints/
 
-# macOS dir files
-.DS_Store
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
 
-exp
-data
-raw_wav
-tensorboard
-**/*build*
-
-# Clangd files
-.cache
-compile_commands.json
-
-# train/inference files
-*.wav
-*.m4a
-*.aac
+# Models (large files)
+pretrained_models/
 *.pt
-pretrained_models/*
-*_pb2_grpc.py
-*_pb2.py
-*.tar
+*.onnx
+*.plan
+
+# Logs
+*.log
+tensorboard/
+
+# OS
+.DS_Store
+Thumbs.db

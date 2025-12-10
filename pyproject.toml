@@ -1,0 +1,44 @@
+[project]
+name = "cosyvoice"
+version = "2.0.0"
+description = "CosyVoice2: Multilingual Zero-shot Text-to-Speech System"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 180
+target-version = "py310"
+exclude = [
+    "third_party",
+    "runtime/python/grpc/cosyvoice_pb2*.py",
+    ".venv",
+    ".venv_vllm",
+    "pretrained_models",
+]
+
+[tool.ruff.lint]
+# Match existing flake8 ignore list + pre-existing issues
+ignore = [
+    "B006",   # Do not use mutable data structures for argument defaults
+    "B008",   # Do not perform function calls in argument defaults
+    "B904",   # Within except clause, raise with from (pre-existing)
+    "B905",   # zip() without an explicit strict= parameter
+    "C408",   # Unnecessary dict call - rewrite as a literal
+    "E402",   # Module level import not at top of file
+    "E731",   # Do not assign a lambda expression, use a def
+    "E741",   # Ambiguous variable name
+    "F401",   # Module imported but unused
+    "F403",   # from module import * used
+    "F405",   # Name may be undefined, or defined from star imports
+    "F841",   # Local variable is assigned to but never used
+]
+select = ["E", "F", "W", "B", "C4"]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
