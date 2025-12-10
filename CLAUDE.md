@@ -419,6 +419,319 @@ python cosyvoice/bin/export_jit.py --model_dir pretrained_models/CosyVoice2-0.5B
 python cosyvoice/bin/export_onnx.py --model_dir pretrained_models/CosyVoice2-0.5B
 ```
 
+### カスタムデータセットでの追加学習
+
+独自のデータセット（日本語など）でCosyVoice2を追加学習する手順です。
+
+#### 必要なファイル形式
+
+カスタムデータセットを使用するには、以下の4つのKaldi形式メタファイルを準備する必要があります：
+
+```
+data/custom_train/
+├── wav.scp              # 発話ID → 音声ファイルパス
+├── text                 # 発話ID → テキスト
+├── utt2spk              # 発話ID → 話者ID
+└── spk2utt              # 話者ID → 発話IDリスト
+```
+
+**wav.scp:**
+```
+spk01_utt0001 /path/to/audio/spk01/utt0001.wav
+spk01_utt0002 /path/to/audio/spk01/utt0002.wav
+spk02_utt0001 /path/to/audio/spk02/utt0001.wav
+```
+
+**text:**
+```
+spk01_utt0001 こんにちは、今日はいい天気ですね。
+spk01_utt0002 明日の予定を教えてください。
+spk02_utt0001 承知しました、確認いたします。
+```
+
+**utt2spk:**
+```
+spk01_utt0001 spk01
+spk01_utt0002 spk01
+spk02_utt0001 spk02
+```
+
+**spk2utt:**
+```
+spk01 spk01_utt0001 spk01_utt0002
+spk02 spk02_utt0001
+```
+
+#### 日本語テキストの正規化
+
+日本語データセットを使用する場合、テキストを事前に正規化することを推奨します：
+
+```python
+# 推奨される前処理
+def normalize_japanese_text(text):
+    # 1. 数字を読み仮名に変換
+    # 例: "2024年" → "二千二十四年"
+
+    # 2. 半角を全角に統一
+    # 例: "ABC" → "ＡＢＣ"
+
+    # 3. 句読点の統一
+    # 例: "." → "。", "," → "、"
+
+    # 4. 改行・余分な空白を削除
+    text = text.replace('\n', '').strip()
+
+    return text
+```
+
+**注意:** トレーニング時に `text_frontend=False` を設定することで、CosyVoice2の自動正規化をスキップできます（事前正規化済みデータ向け）。
+
+#### prepare_data.py のカスタマイズ例
+
+WAV + 対応テキストファイル形式のデータセット用：
+
+```python
+#!/usr/bin/env python3
+# examples/custom/cosyvoice2/local/prepare_data.py
+
+import argparse
+import os
+import glob
+from collections import defaultdict
+
+def main(args):
+    utt2wav, utt2text, utt2spk = {}, {}, {}
+    spk2utt = defaultdict(list)
+
+    # speaker_id/utterance.wav + utterance.txt 形式を想定
+    wav_files = glob.glob(f'{args.src_dir}/*/*.wav')
+
+    for wav_path in wav_files:
+        # 話者IDをディレクトリ名から取得
+        spk = os.path.basename(os.path.dirname(wav_path))
+        utt_name = os.path.splitext(os.path.basename(wav_path))[0]
+        utt_id = f"{spk}_{utt_name}"
+
+        # 対応するテキストファイル
+        txt_path = wav_path.replace('.wav', '.txt')
+        if not os.path.exists(txt_path):
+            continue
+
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            text = f.read().strip()
+
+        utt2wav[utt_id] = os.path.abspath(wav_path)
+        utt2text[utt_id] = text
+        utt2spk[utt_id] = spk
+        spk2utt[spk].append(utt_id)
+
+    # メタファイル出力
+    os.makedirs(args.des_dir, exist_ok=True)
+
+    with open(f'{args.des_dir}/wav.scp', 'w', encoding='utf-8') as f:
+        for utt, wav in sorted(utt2wav.items()):
+            f.write(f'{utt} {wav}\n')
+
+    with open(f'{args.des_dir}/text', 'w', encoding='utf-8') as f:
+        for utt, text in sorted(utt2text.items()):
+            f.write(f'{utt} {text}\n')
+
+    with open(f'{args.des_dir}/utt2spk', 'w', encoding='utf-8') as f:
+        for utt, spk in sorted(utt2spk.items()):
+            f.write(f'{utt} {spk}\n')
+
+    with open(f'{args.des_dir}/spk2utt', 'w', encoding='utf-8') as f:
+        for spk, utts in sorted(spk2utt.items()):
+            f.write(f'{spk} {" ".join(utts)}\n')
+
+    print(f'Prepared {len(utt2wav)} utterances from {len(spk2utt)} speakers')
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--src_dir', required=True, help='Source data directory')
+    parser.add_argument('--des_dir', required=True, help='Output directory')
+    args = parser.parse_args()
+    main(args)
+```
+
+#### カスタムデータセット用トレーニングスクリプト
+
+```bash
+#!/bin/bash
+# examples/custom/cosyvoice2/run.sh
+
+. ./path.sh || exit 1
+
+stage=0
+stop_stage=7
+
+# カスタムデータセットのパス
+data_dir=/path/to/your/japanese_dataset
+pretrained_model_dir=../../../pretrained_models/CosyVoice2-0.5B
+
+# Stage 0: データ準備
+if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
+    echo "Stage 0: Prepare data"
+    for x in train val; do
+        mkdir -p data/$x
+        python local/prepare_data.py \
+            --src_dir $data_dir/$x \
+            --des_dir data/$x
+    done
+fi
+
+# Stage 1: 話者embedding抽出
+if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
+    echo "Stage 1: Extract speaker embeddings"
+    for x in train val; do
+        tools/extract_embedding.py \
+            --dir data/$x \
+            --onnx_path $pretrained_model_dir/campplus.onnx
+    done
+fi
+
+# Stage 2: 音声トークン抽出
+if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
+    echo "Stage 2: Extract speech tokens"
+    for x in train val; do
+        tools/extract_speech_token.py \
+            --dir data/$x \
+            --onnx_path $pretrained_model_dir/speech_tokenizer_v2.onnx
+    done
+fi
+
+# Stage 3: Parquetフォーマット変換
+if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
+    echo "Stage 3: Make parquet files"
+    for x in train val; do
+        mkdir -p data/$x/parquet
+        tools/make_parquet_list.py \
+            --num_utts_per_parquet 1000 \
+            --num_processes 10 \
+            --src_dir data/$x \
+            --des_dir data/$x/parquet
+    done
+fi
+
+# Stage 5: モデルトレーニング（LLM → Flow → HiFiGAN）
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
+num_gpus=$(echo $CUDA_VISIBLE_DEVICES | awk -F "," '{print NF}')
+
+if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+    echo "Stage 5: Train models"
+    cat data/train/parquet/data.list > data/train.data.list
+    cat data/val/parquet/data.list > data/val.data.list
+
+    for model in llm flow hifigan; do
+        torchrun --nnodes=1 --nproc_per_node=$num_gpus \
+            --rdzv_id=1986 --rdzv_backend="c10d" --rdzv_endpoint="localhost:1234" \
+          cosyvoice/bin/train.py \
+          --train_engine torch_ddp \
+          --config conf/cosyvoice2.yaml \
+          --train_data data/train.data.list \
+          --cv_data data/val.data.list \
+          --model $model \
+          --checkpoint $pretrained_model_dir/$model.pt \
+          --qwen_pretrain_path $pretrained_model_dir/CosyVoice-BlankEN \
+          --model_dir `pwd`/exp/cosyvoice2/$model/torch_ddp \
+          --tensorboard_dir tensorboard/cosyvoice2/$model/torch_ddp \
+          --ddp.dist_backend nccl \
+          --num_workers 2 \
+          --prefetch 100 \
+          --pin_memory \
+          --use_amp
+    done
+fi
+```
+
+#### 重要な注意事項
+
+1. **音声ファイル要件:**
+   - サンプリングレート: 16kHz（自動リサンプリングあり）
+   - 最大長: 30秒（超過分はスキップ）
+   - フォーマット: WAV推奨
+
+2. **トレーニング対象モデル:**
+   - LLM（Qwen2LM）: テキスト→音声トークン
+   - Flow（CausalMaskedDiff）: 音声トークン→メルスペクトログラム
+   - HiFiGAN: メルスペクトログラム→音声波形
+   - 3つ全てを順番にトレーニング
+
+3. **日本語固有の制限:**
+   - 専用の日本語フロントエンドはまだ実装されていない
+   - テキストは事前に正規化し、`text_frontend=False`での使用を推奨
+   - Qwen2トークナイザーは日本語をネイティブサポート
+
+4. **GPU要件:**
+   - 最低12GB VRAM推奨
+   - マルチGPU推奨（大規模データセット向け）
+
+#### LLMのトレーニング方法
+
+LLMには3つのトレーニング方法があります。**SFTが基本**で、DPO/GRPOはオプションです。
+
+| 方法 | 正式名称 | 必須度 | 用途 |
+|------|----------|--------|------|
+| **SFT** | Supervised Fine-Tuning | **必須** | 基本のファインチューニング |
+| **DPO** | Direct Preference Optimization | 任意 | 品質改善（reject sampleが必要） |
+| **GRPO** | Group Relative Policy Optimization | 任意 | 発音精度向上（ASRサーバーが必要） |
+
+**推奨フロー:**
+```
+SFT（必須）→ 評価 → 満足なら終了
+              ↓ 不満なら
+           DPO または GRPO（任意）
+```
+
+**1. SFT（教師あり学習）- 初回はこれだけでOK**
+
+標準的な教師あり学習。カスタムデータセットでそのまま使用可能。
+
+```bash
+# run.sh の Stage 5 で実行
+torchrun ... cosyvoice/bin/train.py \
+    --model llm \
+    --checkpoint $pretrained_model_dir/llm.pt \
+    ...
+```
+
+**2. DPO（選好学習）- オプション**
+
+「良い音声」と「悪い音声」のペアを使って品質を改善。SFT後に実施。
+
+```bash
+# run_dpo.sh で実行
+# Stage 0: reject sample（悪い音声）を生成
+python local/prepare_reject_sample.py \
+    --src_dir data/train \
+    --des_dir data/train_reject \
+    --ref_model $pretrained_model_dir
+
+# Stage 5: DPOトレーニング
+torchrun ... cosyvoice/bin/train.py \
+    --model llm \
+    --dpo \
+    --ref_model $pretrained_model_dir/llm.pt \
+    ...
+```
+
+**3. GRPO（強化学習）- オプション**
+
+ASRモデルを使って発音精度を測定し、強化学習で改善。セットアップが複雑。
+
+```bash
+# examples/grpo/cosyvoice2/ で実行
+# ASRサーバーの起動が必要
+python token2wav_asr_server.py --port 8888
+
+# GRPOトレーニング
+python -m verl.trainer.main_ppo \
+    algorithm.adv_estimator=grpo \
+    ...
+```
+
+詳細は `examples/grpo/cosyvoice2/run.sh` を参照。
+
 ### GRPO (強化学習) トレーニング
 
 **目的:** Reinforcement Learningで発音精度とMOS評価を向上
