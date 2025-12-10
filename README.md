@@ -61,12 +61,22 @@ cd CosyVoice
 git submodule update --init --recursive
 ```
 
-### Conda環境の構築
+### 環境の構築
 
 ```sh
-conda create -n cosyvoice -y python=3.10
-conda activate cosyvoice
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+# uvのインストール（未インストールの場合）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Python 3.10仮想環境の作成
+uv venv --python 3.10 .venv
+
+# 仮想環境の有効化
+source .venv/bin/activate  # Linux/macOS
+# または
+.venv\Scripts\activate  # Windows
+
+# 依存パッケージのインストール
+uv pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
 
 # Sox互換性問題がある場合
 # Ubuntu:
@@ -159,9 +169,17 @@ vLLMを推論に使用する場合は、`vllm==v0.9.0`をインストールし�
 `vllm==v0.9.0`には多くの特定の要件があります（例: `torch==2.7.0`）。ハードウェアがvLLMをサポートしていない場合に古い環境が破損しないように、新しい環境を作成できます。
 
 ```sh
-conda create -n cosyvoice_vllm --clone cosyvoice
-conda activate cosyvoice_vllm
-pip install vllm==v0.9.0 transformers==4.51.3 -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+# vLLM用の別仮想環境作成
+uv venv --python 3.10 .venv_vllm
+source .venv_vllm/bin/activate  # Linux/macOS
+
+# 標準の依存関係をインストール
+uv pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+
+# vLLM関連パッケージをインストール
+uv pip install vllm==v0.9.0 transformers==4.51.3 -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+
+# vLLM推論の実行
 python vllm_example.py
 ```
 

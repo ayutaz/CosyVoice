@@ -30,10 +30,19 @@ CosyVoice2は、テキストから音声を生成する多言語ゼロショッ�
 ### 環境構築
 
 ```bash
+# uvのインストール（未インストールの場合）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Python 3.10仮想環境の作成
+uv venv --python 3.10 .venv
+
+# 仮想環境の有効化
+source .venv/bin/activate  # Linux/macOS
+# または
+.venv\Scripts\activate  # Windows
+
 # 依存パッケージのインストール
-conda create -n cosyvoice -y python=3.10
-conda activate cosyvoice
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+uv pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
 
 # sox互換性問題がある場合
 # Ubuntu:
@@ -103,10 +112,17 @@ python cosyvoice/bin/export_onnx.py --model_dir pretrained_models/CosyVoice2-0.5
 ### vLLMを使った推論
 
 ```bash
-# vLLM環境の準備（既存環境を保護）
-conda create -n cosyvoice_vllm --clone cosyvoice
-conda activate cosyvoice_vllm
-pip install vllm==v0.9.0 transformers==4.51.3
+# vLLM用の別仮想環境作成
+uv venv --python 3.10 .venv_vllm
+
+# 仮想環境の有効化
+source .venv_vllm/bin/activate  # Linux/macOS
+
+# 標準の依存関係をインストール
+uv pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+
+# vLLM関連パッケージをインストール
+uv pip install vllm==v0.9.0 transformers==4.51.3 -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
 
 # vLLM推論の実行
 python vllm_example.py
@@ -616,10 +632,15 @@ vLLMは、CosyVoice2のQwen2LLMを高速化する重要な最適化です。
 
 **インストール:**
 ```bash
-# 新しいenvでインストール（既存環境を保護）
-conda create -n cosyvoice_vllm --clone cosyvoice
-conda activate cosyvoice_vllm
-pip install vllm==v0.9.0 transformers==4.51.3 -i https://mirrors.aliyun.com/pypi/simple/
+# vLLM用の別仮想環境作成
+uv venv --python 3.10 .venv_vllm
+source .venv_vllm/bin/activate  # Linux/macOS
+
+# 標準の依存関係をインストール
+uv pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
+
+# vLLM関連パッケージをインストール
+uv pip install vllm==v0.9.0 transformers==4.51.3 -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 **使用例:**
@@ -963,7 +984,7 @@ pip install ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl
 
 ### vLLM
 
-13. **vLLM環境:** 既存環境を破壊しないよう、新しいconda envで使用
+13. **vLLM環境:** 既存環境を破壊しないよう、別の仮想環境（.venv_vllm）で使用
 14. **PyTorchバージョン:** vLLM v0.9.0はtorch 2.7.0が必要
 
 ### GRPO
