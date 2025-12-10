@@ -20,6 +20,7 @@ import math
 from typing import Tuple
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -30,6 +31,8 @@ class MultiHeadedAttention(nn.Module):
         n_head (int): The number of heads.
         n_feat (int): The number of features.
         dropout_rate (float): Dropout rate.
+        use_sdpa (bool): If True, use scaled_dot_product_attention (Flash Attention 2)
+            for memory-efficient attention computation. Default: True.
 
     """
 
@@ -37,7 +40,8 @@ class MultiHeadedAttention(nn.Module):
                  n_head: int,
                  n_feat: int,
                  dropout_rate: float,
-                 key_bias: bool = True):
+                 key_bias: bool = True,
+                 use_sdpa: bool = True):
         """Construct an MultiHeadedAttention object."""
         super().__init__()
         assert n_feat % n_head == 0
@@ -49,6 +53,8 @@ class MultiHeadedAttention(nn.Module):
         self.linear_v = nn.Linear(n_feat, n_feat)
         self.linear_out = nn.Linear(n_feat, n_feat)
         self.dropout = nn.Dropout(p=dropout_rate)
+        self.use_sdpa = use_sdpa
+        self.dropout_rate = dropout_rate
 
     def forward_qkv(
         self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
@@ -126,6 +132,63 @@ class MultiHeadedAttention(nn.Module):
 
         return self.linear_out(x)  # (batch, time1, d_model)
 
+    def forward_sdpa(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: torch.Tensor = torch.ones((0, 0, 0), dtype=torch.bool),
+    ) -> torch.Tensor:
+        """Compute attention using scaled_dot_product_attention (Flash Attention 2).
+
+        This method provides memory-efficient attention computation using PyTorch's
+        native SDPA implementation, which automatically uses Flash Attention 2
+        when available on compatible hardware.
+
+        Args:
+            q (torch.Tensor): Query tensor (#batch, n_head, time1, d_k).
+            k (torch.Tensor): Key tensor (#batch, n_head, time2, d_k).
+            v (torch.Tensor): Value tensor (#batch, n_head, time2, d_k).
+            mask (torch.Tensor): Mask tensor (#batch, 1, time2) or
+                (#batch, time1, time2). 1=attend, 0=mask.
+
+        Returns:
+            torch.Tensor: Output tensor (#batch, time1, d_model).
+        """
+        n_batch = q.size(0)
+
+        # Convert mask format for SDPA
+        # Input mask: 1=attend, 0=mask
+        # SDPA boolean mask: True=attend, False=mask (need to convert)
+        # SDPA additive mask: 0=attend, -inf=mask
+        attn_mask = None
+        if mask.size(2) > 0:
+            # Expand mask for multi-head: (batch, 1, time2) -> (batch, 1, 1, time2)
+            # or (batch, time1, time2) -> (batch, 1, time1, time2)
+            if mask.dim() == 3:
+                attn_mask = mask.unsqueeze(1)  # (batch, 1, *, time2)
+            # Ensure mask size matches key size
+            if attn_mask is not None and attn_mask.size(-1) > k.size(2):
+                attn_mask = attn_mask[..., :k.size(2)]
+            # Convert to boolean: 1->True (attend), 0->False (mask)
+            if attn_mask is not None:
+                attn_mask = attn_mask.bool()
+
+        # Use scaled_dot_product_attention (Flash Attention 2 when available)
+        dropout_p = self.dropout_rate if self.training else 0.0
+        x = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            scale=1.0 / math.sqrt(self.d_k),
+        )  # (batch, head, time1, d_k)
+
+        x = (x.transpose(1, 2).contiguous().view(n_batch, -1,
+                                                 self.h * self.d_k)
+             )  # (batch, time1, d_model)
+
+        return self.linear_out(x)  # (batch, time1, d_model)
+
     def forward(
         self,
         query: torch.Tensor,
@@ -193,8 +256,21 @@ class MultiHeadedAttention(nn.Module):
         #   non-trivial to calculate `next_cache_start` here.
         new_cache = torch.cat((k, v), dim=-1)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-        return self.forward_attention(v, scores, mask), new_cache
+        # Use SDPA (Flash Attention 2) when:
+        # - use_sdpa is enabled
+        # - Not exporting (cache.size(0) == 0 means JIT/ONNX export mode)
+        # - Not using ONNX export (detected by cache pattern)
+        use_sdpa_here = (
+            self.use_sdpa
+            and cache.size(0) == 0  # Not in export mode with pre-filled cache
+            and not torch.jit.is_scripting()  # Not during JIT compilation
+        )
+
+        if use_sdpa_here:
+            return self.forward_sdpa(q, k, v, mask), new_cache
+        else:
+            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+            return self.forward_attention(v, scores, mask), new_cache
 
 
 class RelPositionMultiHeadedAttention(MultiHeadedAttention):
