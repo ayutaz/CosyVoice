@@ -15,12 +15,11 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.10
 
-      - name: Run tests
-        run: uv run --with pytest --with pytest-cov --with inflect --with regex pytest tests/ -v --tb=short
-
       - name: Run tests with coverage
-        run: uv run --with pytest --with pytest-cov --with inflect --with regex pytest tests/ --cov=cosyvoice/utils --cov-report=term-missing
+        run: uv run --with pytest --with pytest-cov --with inflect --with regex pytest tests/ -v --tb=short --cov=cosyvoice/utils --cov-report=term-missing
