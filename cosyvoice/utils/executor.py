@@ -149,7 +149,9 @@ class Executor:
         '''
         logging.info('Epoch {} Step {} on_batch_end {} CV rank {}'.format(self.epoch, self.step + 1, on_batch_end, self.rank))
         model.eval()
-        total_num_utts, total_loss_dict = 0, {}  # avoid division by 0
+        total_num_utts = 0
+        # Accumulate losses on GPU to avoid per-batch CPU sync overhead
+        total_loss_tensors = {}
         for batch_idx, batch_dict in enumerate(cv_data_loader):
             info_dict["tag"] = "CV"
             info_dict["step"] = self.step
@@ -163,13 +165,18 @@ class Executor:
                 batch_dict['turn'] = 'generator'
             info_dict = batch_forward(model, batch_dict, None, info_dict)
 
+            # Accumulate on GPU (no .item() call here to avoid sync)
             for k, v in info_dict['loss_dict'].items():
-                if k not in total_loss_dict:
-                    total_loss_dict[k] = []
-                total_loss_dict[k].append(v.mean().item() * num_utts)
+                weighted_loss = v.mean() * num_utts
+                if k not in total_loss_tensors:
+                    total_loss_tensors[k] = weighted_loss
+                else:
+                    total_loss_tensors[k] = total_loss_tensors[k] + weighted_loss
             log_per_step(None, info_dict)
-        for k, v in total_loss_dict.items():
-            total_loss_dict[k] = sum(v) / total_num_utts
+        # Single CPU transfer at the end (batch synchronization)
+        total_loss_dict = {}
+        for k, v in total_loss_tensors.items():
+            total_loss_dict[k] = v.item() / total_num_utts
         info_dict['loss_dict'] = total_loss_dict
         log_per_save(writer, info_dict)
         model_name = 'epoch_{}_whole'.format(self.epoch) if on_batch_end else 'epoch_{}_step_{}'.format(self.epoch, self.step + 1)
