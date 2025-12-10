@@ -14,6 +14,8 @@
 # limitations under the License.
 import os
 from typing import Generator
+from collections import deque
+from itertools import islice
 import torch
 import numpy as np
 import threading
@@ -219,7 +221,8 @@ class CosyVoiceModel:
         # this_uuid is used to track variables related to this inference thread
         this_uuid = str(uuid.uuid1())
         with self.lock:
-            self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid] = [], False
+            # Use deque for O(1) popleft operations (vs O(n) list slicing)
+            self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid] = deque(), False
             self.hift_cache_dict[this_uuid] = None
             self.mel_overlap_dict[this_uuid] = torch.zeros(1, 80, 0)
             self.flow_cache_dict[this_uuid] = torch.zeros(1, 80, 0, 2)
@@ -233,8 +236,10 @@ class CosyVoiceModel:
             while True:
                 time.sleep(0.01)  # Reduced from 0.1 for faster streaming response
                 if len(self.tts_speech_token_dict[this_uuid]) >= token_hop_len + self.token_overlap_len:
-                    this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_hop_len + self.token_overlap_len]) \
-                        .unsqueeze(dim=0)
+                    # Use islice for O(n) access where n = elements needed (same as list)
+                    this_tts_speech_token = torch.tensor(
+                        list(islice(self.tts_speech_token_dict[this_uuid], token_hop_len + self.token_overlap_len))
+                    ).unsqueeze(dim=0)
                     this_tts_speech = self.token2wav(token=this_tts_speech_token,
                                                      prompt_token=flow_prompt_speech_token,
                                                      prompt_feat=prompt_speech_feat,
@@ -243,14 +248,17 @@ class CosyVoiceModel:
                                                      finalize=False)
                     yield {'tts_speech': this_tts_speech.cpu()}
                     with self.lock:
-                        self.tts_speech_token_dict[this_uuid] = self.tts_speech_token_dict[this_uuid][token_hop_len:]
+                        # Use popleft for O(k) removal where k = elements to remove
+                        # (vs O(n) for list slicing where n = total length)
+                        for _ in range(token_hop_len):
+                            self.tts_speech_token_dict[this_uuid].popleft()
                     # increase token_hop_len for better speech quality
                     token_hop_len = min(self.token_max_hop_len, int(token_hop_len * self.stream_scale_factor))
                 if self.llm_end_dict[this_uuid] is True and len(self.tts_speech_token_dict[this_uuid]) < token_hop_len + self.token_overlap_len:
                     break
             p.join()
             # deal with remain tokens, make sure inference remain token len equals token_hop_len when cache_speech is not None
-            this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
+            this_tts_speech_token = torch.tensor(list(self.tts_speech_token_dict[this_uuid])).unsqueeze(dim=0)
             this_tts_speech = self.token2wav(token=this_tts_speech_token,
                                              prompt_token=flow_prompt_speech_token,
                                              prompt_feat=prompt_speech_feat,
@@ -261,7 +269,7 @@ class CosyVoiceModel:
         else:
             # deal with all tokens
             p.join()
-            this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
+            this_tts_speech_token = torch.tensor(list(self.tts_speech_token_dict[this_uuid])).unsqueeze(dim=0)
             this_tts_speech = self.token2wav(token=this_tts_speech_token,
                                              prompt_token=flow_prompt_speech_token,
                                              prompt_feat=prompt_speech_feat,
