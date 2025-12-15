@@ -87,23 +87,23 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     utt2wav, utt2text, utt2spk, utt2instruct = {}, {}, {}, {}
-    with open('{}/wav.scp'.format(args.src_dir)) as f:
+    with open('{}/wav.scp'.format(args.src_dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2wav[l[0]] = l[1]
-    with open('{}/text'.format(args.src_dir)) as f:
+            l = l.replace('\n', '').split(maxsplit=1)
+            utt2wav[l[0]] = l[1] if len(l) > 1 else ''
+    with open('{}/text'.format(args.src_dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2text[l[0]] = ' '.join(l[1:])
-    with open('{}/utt2spk'.format(args.src_dir)) as f:
+            l = l.replace('\n', '').split(maxsplit=1)
+            utt2text[l[0]] = l[1] if len(l) > 1 else ''
+    with open('{}/utt2spk'.format(args.src_dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2spk[l[0]] = l[1]
+            l = l.replace('\n', '').split(maxsplit=1)
+            utt2spk[l[0]] = l[1] if len(l) > 1 else ''
     if args.instruct is True:
-        with open('{}/instruct'.format(args.src_dir)) as f:
+        with open('{}/instruct'.format(args.src_dir), encoding='utf-8') as f:
             for l in f:
-                l = l.replace('\n', '').split()
-                utt2instruct[l[0]] = ' '.join(l[1:])
+                l = l.replace('\n', '').split(maxsplit=1)
+                utt2instruct[l[0]] = l[1] if len(l) > 1 else ''
     utt2embedding = torch.load('{}/utt2embedding.pt'.format(args.src_dir))
     spk2embedding = torch.load('{}/spk2embedding.pt'.format(args.src_dir))
     utt2speech_token = torch.load('{}/utt2speech_token.pt'.format(args.src_dir))

@@ -15,11 +15,31 @@
 import re
 import regex
 chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
+hiragana_pattern = re.compile(r'[\u3040-\u309f]+')
+katakana_pattern = re.compile(r'[\u30a0-\u30ff]+')
 
 
 # whether contain chinese character
 def contains_chinese(text):
     return bool(chinese_char_pattern.search(text))
+
+
+# whether contain japanese character (hiragana or katakana)
+def contains_japanese(text):
+    return bool(hiragana_pattern.search(text) or katakana_pattern.search(text))
+
+
+# detect language: ja > zh > en priority
+def detect_language(text):
+    """Detect the primary language of text.
+    Japanese is detected by hiragana/katakana presence (priority over Chinese).
+    Returns: 'ja', 'zh', or 'en'
+    """
+    if contains_japanese(text):
+        return 'ja'
+    elif contains_chinese(text):
+        return 'zh'
+    return 'en'
 
 
 # replace special symbol
@@ -64,18 +84,18 @@ def spell_out_number(text: str, inflect_parser):
 # 3. split sentence according to puncatation
 def split_paragraph(text: str, tokenize, lang="zh", token_max_n=80, token_min_n=60, merge_len=20, comma_split=False):
     def calc_utt_length(_text: str):
-        if lang == "zh":
+        if lang in ["zh", "ja"]:  # Japanese uses character count like Chinese
             return len(_text)
         else:
             return len(tokenize(_text))
 
     def should_merge(_text: str):
-        if lang == "zh":
+        if lang in ["zh", "ja"]:
             return len(_text) < merge_len
         else:
             return len(tokenize(_text)) < merge_len
 
-    if lang == "zh":
+    if lang in ["zh", "ja"]:  # Japanese uses same punctuation as Chinese
         pounc = ['。', '？', '！', '；', '：', '、', '.', '?', '!', ';']
     else:
         pounc = ['.', '?', '!', ';', ':']
@@ -83,7 +103,7 @@ def split_paragraph(text: str, tokenize, lang="zh", token_max_n=80, token_min_n=
         pounc.extend(['，', ','])
 
     if text[-1] not in pounc:
-        if lang == "zh":
+        if lang in ["zh", "ja"]:
             text += "。"
         else:
             text += "."

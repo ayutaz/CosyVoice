@@ -33,7 +33,7 @@ except ImportError:
     from wetext import Normalizer as EnNormalizer
     use_ttsfrd = False
 from cosyvoice.utils.file_utils import logging, load_wav
-from cosyvoice.utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
+from cosyvoice.utils.frontend_utils import contains_chinese, detect_language, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
 
 
 class CosyVoiceFrontEnd:
@@ -71,6 +71,13 @@ class CosyVoiceFrontEnd:
             self.zh_tn_model = ZhNormalizer(remove_erhua=False)
             self.en_tn_model = EnNormalizer()
             self.inflect_parser = inflect.engine()
+            self.ja_tn_model = None  # Lazy initialization for Japanese
+
+    def _init_japanese_normalizer(self):
+        """Initialize Japanese text normalizer on first use"""
+        if self.ja_tn_model is None:
+            from cosyvoice.utils.japanese_frontend import JapaneseTextNormalizer
+            self.ja_tn_model = JapaneseTextNormalizer()
 
     def _extract_text_token(self, text):
         if isinstance(text, Generator):
@@ -135,7 +142,19 @@ class CosyVoiceFrontEnd:
             texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]
             text = ''.join(texts)
         else:
-            if contains_chinese(text):
+            # Detect language: Japanese > Chinese > English priority
+            lang = detect_language(text)
+
+            if lang == 'ja':
+                # Japanese text processing
+                self._init_japanese_normalizer()
+                text = self.ja_tn_model.normalize(text)
+                text = text.replace("\n", "")
+                text = replace_blank(text)
+                texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "ja", token_max_n=80,
+                                             token_min_n=60, merge_len=20, comma_split=False))
+            elif lang == 'zh':
+                # Chinese text processing
                 text = self.zh_tn_model.normalize(text)
                 text = text.replace("\n", "")
                 text = replace_blank(text)
@@ -147,6 +166,7 @@ class CosyVoiceFrontEnd:
                 texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "zh", token_max_n=80,
                                              token_min_n=60, merge_len=20, comma_split=False))
             else:
+                # English text processing
                 text = self.en_tn_model.normalize(text)
                 text = spell_out_number(text, self.inflect_parser)
                 texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "en", token_max_n=80,
