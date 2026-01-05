@@ -25,6 +25,7 @@ import re
 import inflect
 from cosyvoice.utils.file_utils import logging, load_wav
 from cosyvoice.utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
+from cosyvoice.utils.japanese_utils import contains_japanese, preprocess_japanese
 
 
 class CosyVoiceFrontEnd:
@@ -134,6 +135,13 @@ class CosyVoiceFrontEnd:
         if text_frontend is False or text == '':
             return [text] if split is True else text
         text = text.strip()
+
+        # Japanese text preprocessing (hiragana/katakana detected = Japanese)
+        if contains_japanese(text):
+            text = preprocess_japanese(text)
+            logging.info('preprocessed Japanese text: {}'.format(text))
+            return [text] if split is True else text
+
         if self.text_frontend == 'ttsfrd':
             texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]
             text = ''.join(texts)
