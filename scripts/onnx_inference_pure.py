@@ -454,7 +454,7 @@ class PureOnnxCosyVoice3:
         spks_batch = np.concatenate([spks, spks], axis=0)
         conds_batch = np.concatenate([conds, conds], axis=0)
 
-        print(f"    Running {n_timesteps} flow steps (mel_len={mel_len})...")
+        print(f"    Running {n_timesteps} flow steps (mel_len={mel_len}, prompt={mel_len1}, generated={mel_len2})...")
 
         # Euler solver
         for step in range(n_timesteps):
@@ -472,7 +472,11 @@ class PureOnnxCosyVoice3:
             dt = 1.0 / n_timesteps
             x_batch = x_batch + velocity * dt
 
+        # Extract only the generated portion (exclude prompt)
         mel = x_batch[:1]
+        if mel_len1 > 0:
+            mel = mel[:, :, mel_len1:]  # Remove prompt portion
+            print(f"    Extracted generated portion: mel shape {mel.shape}")
         return mel
 
     def _stft(self, x: np.ndarray, n_fft: int = 16, hop_len: int = 4) -> tuple:
