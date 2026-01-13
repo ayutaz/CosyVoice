@@ -8,8 +8,18 @@ Pure ONNX CosyVoice3 Inference (No PyTorch model loading)
 This script performs TTS inference using ONLY ONNX models.
 Suitable for porting to Unity Sentis.
 
+IMPORTANT: CosyVoice is a voice cloning TTS system. A prompt audio file is REQUIRED
+for proper inference. Without prompt audio, the output will have poor quality
+(random voice, unnatural prosody, "a~" sound at the beginning).
+
 Usage:
-    python scripts/onnx_inference_pure.py --text "<|en|>Hello world"
+    python scripts/onnx_inference_pure.py --text "<|en|>Hello world" --prompt_wav asset/cross_lingual_prompt.wav
+    python scripts/onnx_inference_pure.py --text "<|ja|>こんにちは" --prompt_wav my_voice.wav
+
+Prompt Audio Requirements:
+    - Duration: 3-10 seconds recommended
+    - Format: WAV (other formats supported via librosa)
+    - Quality: Clear speech, minimal background noise
 """
 
 import argparse
@@ -22,6 +32,7 @@ import json
 import numpy as np
 import onnxruntime as ort
 import soundfile as sf
+import librosa
 
 # Add project root to path (only for tokenizer)
 project_root = Path(__file__).parent.parent
@@ -75,6 +86,28 @@ class PureOnnxCosyVoice3:
             so, providers=providers
         )
         print("  Text embedding loaded")
+
+        # Audio processing models (for prompt audio)
+        # Try original FP32 models first, then onnx directory
+        campplus_path = os.path.join(self.model_dir, 'campplus.onnx')
+        if not os.path.exists(campplus_path):
+            campplus_path = os.path.join(self.onnx_dir, f'campplus{suffix}.onnx')
+        if os.path.exists(campplus_path):
+            self.campplus = ort.InferenceSession(campplus_path, so, providers=providers)
+            print(f"  Campplus loaded from {os.path.basename(campplus_path)}")
+        else:
+            self.campplus = None
+            print("  Campplus not found (prompt audio disabled)")
+
+        speech_tokenizer_path = os.path.join(self.model_dir, 'speech_tokenizer_v3.onnx')
+        if not os.path.exists(speech_tokenizer_path):
+            speech_tokenizer_path = os.path.join(self.onnx_dir, f'speech_tokenizer_v3{suffix}.onnx')
+        if os.path.exists(speech_tokenizer_path):
+            self.speech_tokenizer = ort.InferenceSession(speech_tokenizer_path, so, providers=providers)
+            print(f"  Speech tokenizer loaded from {os.path.basename(speech_tokenizer_path)}")
+        else:
+            self.speech_tokenizer = None
+            print("  Speech tokenizer not found (prompt audio disabled)")
 
         # LLM models
         self.llm_backbone_initial = ort.InferenceSession(
@@ -145,6 +178,95 @@ class PureOnnxCosyVoice3:
     def get_speech_embedding(self, token_ids: np.ndarray) -> np.ndarray:
         """Get speech token embeddings using ONNX"""
         return self.llm_speech_embedding.run(None, {'token': token_ids})[0]
+
+    def extract_speaker_embedding(self, audio_path: str) -> np.ndarray:
+        """Extract speaker embedding from prompt audio using Campplus"""
+        if self.campplus is None:
+            raise RuntimeError("Campplus model not loaded")
+
+        # Load audio at 16kHz
+        audio, sr = librosa.load(audio_path, sr=16000)
+        audio = audio.astype(np.float32)
+
+        # Compute Kaldi-style fbank features (80 mels)
+        # Using librosa for compatibility
+        mel = librosa.feature.melspectrogram(
+            y=audio, sr=16000, n_fft=400, hop_length=160,
+            n_mels=80, fmin=20, fmax=7600
+        )
+        # Log mel
+        log_mel = np.log(np.maximum(mel, 1e-10))
+        # Transpose to [frames, 80]
+        log_mel = log_mel.T
+
+        # Mean normalization (as in Kaldi)
+        log_mel = log_mel - log_mel.mean(axis=0, keepdims=True)
+
+        # Add batch dimension: [1, frames, 80]
+        feat = log_mel[np.newaxis, :, :].astype(np.float32)
+
+        # Run campplus
+        input_name = self.campplus.get_inputs()[0].name
+        embedding = self.campplus.run(None, {input_name: feat})[0]
+
+        # Flatten to [1, 192]
+        embedding = embedding.flatten()[np.newaxis, :]
+        return embedding.astype(np.float32)
+
+    def extract_speech_tokens(self, audio_path: str) -> np.ndarray:
+        """Extract speech tokens from prompt audio using speech tokenizer"""
+        if self.speech_tokenizer is None:
+            raise RuntimeError("Speech tokenizer model not loaded")
+
+        # Load audio at 16kHz
+        audio, sr = librosa.load(audio_path, sr=16000)
+        audio = audio.astype(np.float32)
+
+        # Compute Whisper-style log mel spectrogram (128 mels)
+        # Whisper uses: n_fft=400, hop_length=160, n_mels=128
+        mel = librosa.feature.melspectrogram(
+            y=audio, sr=16000, n_fft=400, hop_length=160,
+            n_mels=128, fmin=0, fmax=8000
+        )
+        # Log mel (Whisper style)
+        log_mel = np.log10(np.maximum(mel, 1e-10))
+        # Normalize
+        log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
+        log_mel = (log_mel + 4.0) / 4.0
+
+        # Shape: [1, 128, frames]
+        feat = log_mel[np.newaxis, :, :].astype(np.float32)
+        feat_len = np.array([feat.shape[2]], dtype=np.int32)
+
+        # Run speech tokenizer
+        input_names = [inp.name for inp in self.speech_tokenizer.get_inputs()]
+        speech_token = self.speech_tokenizer.run(None, {
+            input_names[0]: feat,
+            input_names[1]: feat_len
+        })[0]
+
+        # Flatten and return as [1, seq_len]
+        speech_token = speech_token.flatten()[np.newaxis, :]
+        return speech_token.astype(np.int64)
+
+    def extract_speech_mel(self, audio_path: str) -> np.ndarray:
+        """Extract mel spectrogram from prompt audio for flow conditioning"""
+        # Load audio at 24kHz (CosyVoice native rate)
+        audio, sr = librosa.load(audio_path, sr=24000)
+        audio = audio.astype(np.float32)
+
+        # Compute mel spectrogram (80 mels, matching flow model)
+        # CosyVoice uses hop_length=256 at 24kHz
+        mel = librosa.feature.melspectrogram(
+            y=audio, sr=24000, n_fft=1024, hop_length=256,
+            n_mels=80, fmin=0, fmax=12000
+        )
+        # Log mel
+        log_mel = np.log(np.maximum(mel, 1e-10))
+
+        # Shape: [1, frames, 80]
+        mel_feat = log_mel.T[np.newaxis, :, :].astype(np.float32)
+        return mel_feat
 
     def llm_inference(
         self,
@@ -248,9 +370,19 @@ class PureOnnxCosyVoice3:
         self,
         speech_tokens: np.ndarray,
         embedding: np.ndarray,
+        prompt_tokens: np.ndarray = None,
+        prompt_mel: np.ndarray = None,
         n_timesteps: int = 10
     ) -> np.ndarray:
-        """Convert speech tokens to mel using pure ONNX Flow"""
+        """Convert speech tokens to mel using pure ONNX Flow
+
+        Args:
+            speech_tokens: Generated speech tokens [1, seq_len]
+            embedding: Speaker embedding [1, 192]
+            prompt_tokens: Prompt speech tokens [1, prompt_seq_len] (optional)
+            prompt_mel: Prompt mel features [1, prompt_mel_len, 80] (optional)
+            n_timesteps: Number of flow steps
+        """
 
         # Normalize and project speaker embedding
         embedding_norm = embedding / (np.linalg.norm(embedding, axis=1, keepdims=True) + 1e-8)
@@ -258,21 +390,55 @@ class PureOnnxCosyVoice3:
             None, {'embedding': embedding_norm.astype(np.float32)}
         )[0]
 
+        # Concatenate prompt tokens and generated tokens
+        if prompt_tokens is not None and prompt_tokens.shape[1] > 0:
+            all_tokens = np.concatenate([prompt_tokens, speech_tokens], axis=1)
+            prompt_token_len = prompt_tokens.shape[1]
+        else:
+            all_tokens = speech_tokens
+            prompt_token_len = 0
+
         # Embed tokens
         token_embedded = self.flow_token_embedding.run(
-            None, {'token': speech_tokens.astype(np.int64)}
+            None, {'token': all_tokens.astype(np.int64)}
         )[0]
 
-        # Pre-lookahead
+        # Pre-lookahead (already includes repeat_interleave with token_mel_ratio=2)
         h = self.flow_pre_lookahead.run(
             None, {'token_embedded': token_embedded.astype(np.float32)}
         )[0]
 
-        # Dimensions
-        mel_len = h.shape[1]
+        # CosyVoice3 uses token_mel_ratio=2 (each token produces 2 mel frames)
+        # Note: pre_lookahead ONNX model already applies repeat_interleave
+        token_mel_ratio = 2
 
-        # Build conditions (no prompt)
+        # Calculate mel lengths
+        mel_len = h.shape[1]  # h.shape[1] = token_seq_len * token_mel_ratio (from pre_lookahead)
+
+        if prompt_tokens is not None and prompt_token_len > 0:
+            mel_len1 = prompt_token_len * token_mel_ratio
+            mel_len2 = mel_len - mel_len1
+        else:
+            mel_len1 = 0
+            mel_len2 = mel_len
+
+        # Build conditions
         conds = np.zeros((1, 80, mel_len), dtype=np.float32)
+        if prompt_mel is not None and prompt_mel.shape[1] > 0 and mel_len1 > 0:
+            # prompt_mel is [1, frames, 80], transpose to [1, 80, frames]
+            prompt_mel_t = prompt_mel.transpose(0, 2, 1)
+
+            # Resize prompt_mel to match expected mel_len1
+            # This is necessary because the mel extraction rate may differ from token_mel_ratio
+            from scipy.ndimage import zoom
+            src_len = prompt_mel_t.shape[2]
+            if src_len != mel_len1:
+                # Resize along time axis
+                zoom_factor = mel_len1 / src_len
+                prompt_mel_resized = zoom(prompt_mel_t, (1, 1, zoom_factor), order=1)
+                conds[:, :, :mel_len1] = prompt_mel_resized[:, :, :mel_len1]
+            else:
+                conds[:, :, :mel_len1] = prompt_mel_t[:, :, :mel_len1]
 
         # Prepare mu and mask
         mu = h.transpose(0, 2, 1)
@@ -423,10 +589,51 @@ class PureOnnxCosyVoice3:
             audio_len = mel.shape[2] * 256
             return np.random.randn(audio_len).astype(np.float32) * 0.01
 
-    def inference(self, text: str) -> np.ndarray:
-        """Full TTS inference using pure ONNX"""
+    def inference(self, text: str, prompt_wav: str) -> np.ndarray:
+        """Full TTS inference using pure ONNX
+
+        Args:
+            text: Text to synthesize (with language tag, e.g., "<|en|>Hello")
+            prompt_wav: Path to prompt audio file for voice cloning (REQUIRED)
+
+        Returns:
+            Audio waveform as numpy array
+
+        Raises:
+            ValueError: If prompt_wav is not provided or file doesn't exist
+        """
+        # Validate prompt audio (required for proper inference)
+        if not prompt_wav:
+            raise ValueError(
+                "prompt_wav is required for CosyVoice inference. "
+                "CosyVoice is a voice cloning TTS system that requires a reference audio. "
+                "Please provide a prompt audio file (3-10 seconds recommended)."
+            )
+        if not os.path.exists(prompt_wav):
+            raise ValueError(f"Prompt audio file not found: {prompt_wav}")
+
         print(f"\nInput text: {text}")
+        print(f"Prompt audio: {prompt_wav}")
         start_time = time.time()
+
+        # Process prompt audio (required)
+        print("\n0. Processing prompt audio...")
+        prompt_start = time.time()
+
+        # Extract speaker embedding
+        embedding = self.extract_speaker_embedding(prompt_wav)
+        print(f"   Speaker embedding: {embedding.shape}")
+
+        # Extract speech tokens for flow
+        prompt_tokens = self.extract_speech_tokens(prompt_wav)
+        print(f"   Prompt speech tokens: {prompt_tokens.shape} ({prompt_tokens.shape[1]} tokens)")
+
+        # Extract mel for flow conditioning
+        prompt_mel = self.extract_speech_mel(prompt_wav)
+        print(f"   Prompt mel: {prompt_mel.shape} ({prompt_mel.shape[1]} frames)")
+
+        prompt_time = time.time() - prompt_start
+        print(f"   Prompt processing time: {prompt_time:.2f}s")
 
         # Step 1: LLM inference
         print("\n1. Running LLM (ONNX)...")
@@ -438,9 +645,12 @@ class PureOnnxCosyVoice3:
         # Step 2: Flow inference
         print("\n2. Running Flow (ONNX)...")
         flow_start = time.time()
-        # Use random speaker embedding (no prompt)
-        embedding = np.random.randn(1, 192).astype(np.float32)
-        mel = self.flow_inference(speech_tokens, embedding, n_timesteps=10)
+        mel = self.flow_inference(
+            speech_tokens, embedding,
+            prompt_tokens=prompt_tokens,
+            prompt_mel=prompt_mel,
+            n_timesteps=10
+        )
         flow_time = time.time() - flow_start
         print(f"   Mel shape: {mel.shape}")
         print(f"   Flow time: {flow_time:.2f}s")
@@ -474,11 +684,30 @@ class PureOnnxCosyVoice3:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model_dir', type=str, default='pretrained_models/Fun-CosyVoice3-0.5B')
-    parser.add_argument('--text', type=str, default='<|en|>Hello, this is a test of pure ONNX inference.')
-    parser.add_argument('--output', type=str, default='output_onnx_pure.wav')
-    parser.add_argument('--fp32', action='store_true')
+    parser = argparse.ArgumentParser(
+        description='Pure ONNX CosyVoice3 TTS Inference (Voice Cloning)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/onnx_inference_pure.py --text "<|en|>Hello world" --prompt_wav asset/cross_lingual_prompt.wav
+  python scripts/onnx_inference_pure.py --text "<|ja|>こんにちは" --prompt_wav my_voice.wav --output output.wav
+
+Note:
+  CosyVoice is a voice cloning TTS system. A prompt audio file (3-10 seconds) is REQUIRED
+  to specify the target voice characteristics. Without prompt audio, the output will be
+  unusable (random voice, poor quality).
+        """
+    )
+    parser.add_argument('--model_dir', type=str, default='pretrained_models/Fun-CosyVoice3-0.5B',
+                        help='Path to model directory')
+    parser.add_argument('--text', type=str, default='<|en|>Hello, this is a test of pure ONNX inference.',
+                        help='Text to synthesize (include language tag like <|en|>, <|ja|>, etc.)')
+    parser.add_argument('--prompt_wav', type=str, required=True,
+                        help='Path to prompt audio for voice cloning (REQUIRED, 3-10 seconds recommended)')
+    parser.add_argument('--output', type=str, default='output_onnx_pure.wav',
+                        help='Output audio file path')
+    parser.add_argument('--fp32', action='store_true',
+                        help='Use FP32 precision instead of FP16')
 
     args = parser.parse_args()
 
@@ -487,6 +716,7 @@ def main():
     print("=" * 60)
     print(f"Model: {args.model_dir}")
     print(f"Text: {args.text}")
+    print(f"Prompt: {args.prompt_wav}")
     print(f"Use FP16: {not args.fp32}")
     print()
 
@@ -494,7 +724,7 @@ def main():
     engine = PureOnnxCosyVoice3(args.model_dir, use_fp16=not args.fp32)
 
     # Run inference
-    audio = engine.inference(args.text)
+    audio = engine.inference(args.text, prompt_wav=args.prompt_wav)
 
     # Save output
     sf.write(args.output, audio, engine.sample_rate)

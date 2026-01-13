@@ -321,23 +321,59 @@ scipy.signal.stftとtorch.stftの正規化が異なる。
 **解決策**:
 numpy配列をtorchに変換してtorch.stft/istftを使用し、PyTorch HiFTと完全に同じ処理を行う。
 
-### 6.4 先頭トークン発音問題（調査中）
+### 6.4 先頭トークン発音問題（調査完了）
 
 **症状**:
 - 音声の先頭に「a〜」という不要な音が入る
 - "Hello"が"a tarou"のように聞こえる場合がある
 
 **調査結果**:
-- ONNX Top-5 first tokens: Token 1 (15.12%), Token 0 (13.68%), Token 244 (8.65%)
-- ONNX First 10 tokens (greedy): [1, 0, 1, 1, 1, 1, 1, 1, 1, 1]
-- LLM入力差分: 0.000916（非常に小さい）
 
-**推定原因**:
-1. 最初のトークンの確率分布が低い（15%程度）
-2. サンプリングの問題
-3. 訓練データに起因する可能性
+| 項目 | ONNX | PyTorch | 差分 |
+|------|------|---------|------|
+| Hidden states | - | - | max 0.052 |
+| Logits | - | - | max 0.026 |
+| Top-10トークン順位 | [1,0,244,243,...] | [1,0,244,243,...] | 同一 |
+| Greedy生成トークン | [1,0,1,1,1,1,...] | [1,0,1,1,1,1,...] | 同一 |
 
-**現状**: 後半は正常に発音されるため、実用上は大きな問題ではない
+**結論**: **ONNX特有の問題ではない**
+
+ONNXとPyTorchは完全に同じトークンを生成。差分は数値誤差レベル（max 0.05）。
+
+**根本原因**:
+1. プロンプト音声なしでの推論時の期待される動作
+2. 話者埋め込みがないため、モデルはデフォルトの音声特性で生成
+3. 先頭の低番号トークン（27, 28, 1など）が特定の音に対応
+
+**重要**: CosyVoiceは音声クローニングTTSシステムのため、**プロンプト音声は必須**:
+- プロンプト音声から話者埋め込み（campplus）を抽出
+- プロンプト音声から音声トークン（speech_tokenizer）を抽出してFlowに渡す
+- プロンプト音声のメル特徴量をFlowのコンディショニングに使用
+
+プロンプト音声なしでは:
+- ランダムな話者埋め込み → 不自然な声
+- Flowコンディショニングなし → 品質低下、先頭の「a~」音
+
+### 6.5 推論スクリプトの使い方
+
+```bash
+# プロンプト音声付き推論（必須）
+python scripts/onnx_inference_pure.py \
+    --text "<|en|>Hello world" \
+    --prompt_wav asset/cross_lingual_prompt.wav \
+    --output output.wav
+
+# 日本語の場合
+python scripts/onnx_inference_pure.py \
+    --text "<|ja|>こんにちは" \
+    --prompt_wav my_voice.wav \
+    --output japanese_output.wav
+```
+
+**プロンプト音声の要件**:
+- 長さ: 3〜10秒推奨
+- フォーマット: WAV（librosa経由で他形式も対応）
+- 品質: 明瞭な音声、背景ノイズ最小限
 
 ---
 
@@ -415,18 +451,14 @@ numpy配列をtorchに変換してtorch.stft/istftを使用し、PyTorch HiFTと
 | スクリプト | 用途 |
 |-----------|------|
 | `scripts/onnx_inference_pure.py` | Pure ONNX推論（メイン） |
-| `scripts/onnx_inference_hybrid.py` | ハイブリッド推論 |
-| `scripts/onnx_inference_working.py` | 動作確認用 |
+| `scripts/onnx_inference_hybrid.py` | ハイブリッド推論（参照用） |
 
 ### 9.3 テスト・デバッグスクリプト
 
 | スクリプト | 用途 |
 |-----------|------|
 | `scripts/test_onnx_components.py` | コンポーネント単位テスト |
-| `scripts/test_e2e_comparison.py` | E2E比較テスト |
-| `scripts/debug_f0_predictor.py` | F0精度デバッグ |
-| `scripts/debug_first_tokens.py` | 先頭トークンデバッグ |
-| `scripts/verify_hift_onnx.py` | HiFT検証 |
+| `scripts/debug_first_tokens.py` | 先頭トークンデバッグ（調査完了） |
 
 ---
 
@@ -434,26 +466,32 @@ numpy配列をtorchに変換してtorch.stft/istftを使用し、PyTorch HiFTと
 
 ### 10.1 高優先度
 
-1. **先頭トークン問題の調査継続**
-   - PyTorchとONNXの最初のトークン生成を比較
-   - サンプリング戦略の見直し
-
-### 10.2 中優先度
-
-2. **Unity Sentisでの動作検証**
+1. **Unity Sentisでの動作検証**
    - 各ONNXモデルのロード確認
    - パフォーマンス測定
 
+2. **C#実装**
+   - Qwen2 BPEトークナイザー
+   - KVキャッシュ管理
+   - Top-Kサンプリング
+
+### 10.2 中優先度
+
 3. **C# ISTFT実装**
    - n_fft=16の小規模ISTFTは実装が容易
+   - 16点FFTで計算量も少ない
+
+4. **プロンプト音声対応**
+   - 話者埋め込み抽出（CAMPPlus使用）
+   - プロンプト音声トークンの追加
 
 ### 10.3 低優先度
 
-4. **モデルサイズ最適化**
+5. **モデルサイズ最適化**
    - INT8量子化の検討（音質劣化に注意）
    - モデル蒸留
 
-5. **ストリーミング対応**
+6. **ストリーミング対応**
    - チャンク単位での生成
 
 ---

@@ -205,16 +205,42 @@ def compare_first_tokens():
         print(f"\n  LLM input max diff (ONNX vs PT): {input_diff:.6f}")
 
         # Initial forward pass
-        outputs_pt = cosyvoice.model.llm.llm(inputs_embeds=lm_input_pt, use_cache=True)
-        hidden_states_pt = outputs_pt.last_hidden_state
+        # Note: cosyvoice.model.llm.llm is Qwen2Encoder, .model is Qwen2ForCausalLM, .model is Qwen2Model
+        qwen2_model = cosyvoice.model.llm.llm.model.model  # Get the actual Qwen2Model
+
+        # Create attention mask
+        seq_len_pt = lm_input_pt.shape[1]
+        attention_mask_pt = torch.ones((1, seq_len_pt), device=device)
+
+        outputs_pt = qwen2_model(
+            inputs_embeds=lm_input_pt,
+            attention_mask=attention_mask_pt,
+            output_hidden_states=True,
+            return_dict=True,
+            use_cache=True,
+        )
+        hidden_states_pt = outputs_pt.hidden_states[-1]
         past_kv_pt = outputs_pt.past_key_values
 
         print(f"\nInitial pass outputs:")
         print(f"  Hidden states: {hidden_states_pt.shape}")
+        print(f"  KV cache layers: {len(past_kv_pt)}")
 
         # Compare hidden states
-        hidden_diff = np.abs(hidden_states_pt.cpu().numpy() - hidden_states_onnx).max()
+        hidden_pt_np = hidden_states_pt.cpu().numpy()
+        hidden_diff = np.abs(hidden_pt_np - hidden_states_onnx).max()
+        hidden_mean_diff = np.abs(hidden_pt_np - hidden_states_onnx).mean()
         print(f"  Hidden states max diff: {hidden_diff:.6f}")
+        print(f"  Hidden states mean diff: {hidden_mean_diff:.6f}")
+
+        # Per-position hidden state diff
+        print(f"\n  Per-position hidden state max diff:")
+        for pos in range(min(5, hidden_pt_np.shape[1])):
+            pos_diff = np.abs(hidden_pt_np[0, pos, :] - hidden_states_onnx[0, pos, :]).max()
+            print(f"    Position {pos}: {pos_diff:.6f}")
+        if hidden_pt_np.shape[1] > 5:
+            last_pos_diff = np.abs(hidden_pt_np[0, -1, :] - hidden_states_onnx[0, -1, :]).max()
+            print(f"    Position {hidden_pt_np.shape[1]-1} (last): {last_pos_diff:.6f}")
 
         # Get first logits
         logits_pt = cosyvoice.model.llm.llm_decoder(hidden_states_pt[:, -1, :])
@@ -224,8 +250,17 @@ def compare_first_tokens():
         print(f"  Range: [{logits_pt.min():.4f}, {logits_pt.max():.4f}]")
 
         # Compare logits
-        logits_diff = np.abs(logits_pt.cpu().numpy() - logits_onnx.squeeze()).max()
+        logits_pt_np = logits_pt.cpu().numpy()
+        logits_diff = np.abs(logits_pt_np - logits_onnx.squeeze()).max()
+        logits_mean_diff = np.abs(logits_pt_np - logits_onnx.squeeze()).mean()
         print(f"  Logits max diff: {logits_diff:.6f}")
+        print(f"  Logits mean diff: {logits_mean_diff:.6f}")
+
+        # Check if top tokens are the same
+        pt_top10 = np.argsort(logits_pt_np.flatten()[:speech_token_size])[-10:][::-1]
+        onnx_top10 = np.argsort(logits_onnx.flatten()[:speech_token_size])[-10:][::-1]
+        print(f"\n  PT Top-10 tokens: {pt_top10.tolist()}")
+        print(f"  ONNX Top-10 tokens: {onnx_top10.tolist()}")
 
         # Get top-5 tokens
         logits_flat_pt = logits_pt.flatten()[:speech_token_size]
@@ -252,15 +287,21 @@ def compare_first_tokens():
                 break
 
             # Get next embedding
-            next_emb = cosyvoice.model.llm.speech_embedding(torch.tensor([[token]]))
+            next_emb = cosyvoice.model.llm.speech_embedding(torch.tensor([[token]], device=device))
 
-            # Decode step
-            outputs = cosyvoice.model.llm.llm(
+            # Decode step - update attention mask for total length
+            total_len_pt = seq_len_pt + len(pt_tokens)
+            attn_mask_pt = torch.ones((1, total_len_pt), device=device)
+
+            outputs = qwen2_model(
                 inputs_embeds=next_emb,
+                attention_mask=attn_mask_pt,
                 past_key_values=current_kv_pt,
+                output_hidden_states=True,
+                return_dict=True,
                 use_cache=True
             )
-            current_hidden_pt = outputs.last_hidden_state
+            current_hidden_pt = outputs.hidden_states[-1]
             current_kv_pt = outputs.past_key_values
 
     # ==================== Comparison ====================
