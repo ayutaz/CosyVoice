@@ -14,13 +14,17 @@ Pure ONNX推論（PyTorchモデル不要）の環境構築から実行までの�
 
 ## 2. 環境構築
 
-### 2.1 リポジトリのクローン
+ONNX推論専用の軽量環境を一から構築する手順です。PyTorchや学習用依存関係は不要です。
+
+### 2.1 推論スクリプトの取得
+
+推論スクリプトを取得するため、リポジトリをクローンします：
 
 ```bash
-git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git
-cd CosyVoice
-git submodule update --init --recursive
+git clone https://github.com/FunAudioLLM/CosyVoice.git
 ```
+
+**注意**: ONNX推論のみの場合、サブモジュール（`--recursive`）は不要です。
 
 ### 2.2 uvのインストール（未インストールの場合）
 
@@ -32,51 +36,132 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2.3 Python環境の構築
+### 2.3 Python環境の構築（ONNX推論専用）
 
 ```bash
-# 仮想環境の作成と依存パッケージのインストール
-uv sync
+# 新規プロジェクトの作成
+uv init cosyvoice-onnx
+cd cosyvoice-onnx
+
+# pyproject.tomlのrequires-pythonを修正（uv initのデフォルトは>=3.13）
+# requires-python = ">=3.10" に変更する
+
+# Python 3.10を指定
+uv python pin 3.10
+
+# 必要なパッケージのインストール（バージョン指定重要）
+uv add "onnxruntime==1.18.0" "numpy<2" soundfile librosa transformers scipy modelscope huggingface_hub
+```
+
+**重要: バージョン互換性**
+- `onnxruntime==1.18.0`: 新しいバージョン(1.20+)はFP16モデルと互換性問題あり
+- `numpy<2`: ONNX Runtime 1.18.0はNumPy 2.xと非互換
+
+**パッケージ説明:**
+| パッケージ | 用途 |
+|-----------|------|
+| `onnxruntime==1.18.0` | ONNX推論エンジン（バージョン固定） |
+| `numpy<2` | 数値計算（1.x系必須） |
+| `soundfile` | WAVファイル出力 |
+| `librosa` | 音声読み込み、メルスペクトログラム抽出 |
+| `transformers` | Qwen2トークナイザー |
+| `scipy` | 信号処理（zoom等） |
+| `modelscope` | モデルダウンロード |
+| `huggingface_hub` | Hugging Faceからのダウンロード |
+
+**GPU使用時（オプション）:**
+```bash
+# CUDA対応版（バージョン固定）
+uv add "onnxruntime-gpu==1.18.0"
+# または
+uv remove onnxruntime && uv add "onnxruntime-gpu==1.18.0"
+```
+
+### 2.4 推論スクリプトの配置
+
+```bash
+# CosyVoiceリポジトリから推論スクリプトをコピー
+mkdir scripts
+cp /path/to/CosyVoice/scripts/onnx_inference_pure.py scripts/
+
+# プロンプト音声もコピー（オプション）
+mkdir -p asset/prompts
+cp /path/to/CosyVoice/asset/prompts/*.wav asset/prompts/
+```
+
+**最終的なディレクトリ構成:**
+```
+cosyvoice-onnx/
+├── scripts/
+│   └── onnx_inference_pure.py
+├── asset/
+│   └── prompts/
+│       └── *.wav
+├── pretrained_models/
+│   └── Fun-CosyVoice3-0.5B/
+│       └── (モデルファイル)
+├── pyproject.toml
+└── uv.lock
 ```
 
 ---
 
 ## 3. モデルのダウンロード
 
-### 3.1 CosyVoice3モデルのダウンロード
+### 3.1 ONNXモデルのダウンロード（Hugging Face）
 
 ```bash
 uv run python -c "
-from modelscope import snapshot_download
-snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512',
-                  local_dir='pretrained_models/Fun-CosyVoice3-0.5B')
+from huggingface_hub import snapshot_download
+snapshot_download('ayousanz/cosy-voice3-onnx',
+                  local_dir='pretrained_models/Fun-CosyVoice3-0.5B/onnx')
 "
 ```
 
-### 3.2 ONNXファイルの確認
+**リポジトリ:** https://huggingface.co/ayousanz/cosy-voice3-onnx
 
-ダウンロード後、以下のファイルが必要：
+### 3.2 トークナイザーのダウンロード（ModelScope）
 
-**モデルディレクトリ直下** (`pretrained_models/Fun-CosyVoice3-0.5B/`):
-```
-campplus.onnx              # 28MB - 話者埋め込み抽出
-speech_tokenizer_v3.onnx   # 969MB - 音声トークン化
+ONNXモデルに加えて、Qwen2トークナイザーが必要です：
+
+```bash
+# トークナイザーファイルのみダウンロード（model.safetensorsは不要）
+uv run python -c "
+from modelscope import snapshot_download
+snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512',
+                  local_dir='pretrained_models/Fun-CosyVoice3-0.5B',
+                  allow_patterns=['CosyVoice-BlankEN/tokenizer*',
+                                  'CosyVoice-BlankEN/vocab*',
+                                  'CosyVoice-BlankEN/special_tokens*',
+                                  'CosyVoice-BlankEN/config*',
+                                  'CosyVoice-BlankEN/merges*'])
+"
 ```
 
-**onnxサブディレクトリ** (`pretrained_models/Fun-CosyVoice3-0.5B/onnx/`):
+### 3.3 ファイル配置の確認
+
+ダウンロード後、以下の構成になっていることを確認：
+
 ```
-text_embedding_fp32.onnx           # 544MB - テキスト埋め込み
-llm_backbone_initial_fp16.onnx     # 717MB - LLM初回パス
-llm_backbone_decode_fp16.onnx      # 717MB - LLMデコードステップ
-llm_decoder_fp16.onnx              # 12MB  - logits出力
-llm_speech_embedding_fp16.onnx     # 12MB  - 音声トークン埋め込み
-flow_token_embedding_fp16.onnx     # 1MB   - Flowトークン埋め込み
-flow_pre_lookahead_fp16.onnx       # 1MB   - Flow Pre-lookahead
-flow_speaker_projection_fp16.onnx  # 31KB  - 話者投影
-flow.decoder.estimator.fp16.onnx   # 664MB - Flow DiT
-hift_f0_predictor_fp32.onnx        # 13MB  - F0予測
-hift_source_generator_fp32.onnx    # 259MB - ソース生成
-hift_decoder_fp32.onnx             # 70MB  - HiFTデコーダー
+pretrained_models/Fun-CosyVoice3-0.5B/
+├── CosyVoice-BlankEN/           # Qwen2トークナイザー（ModelScopeから）
+│   ├── tokenizer.json
+│   └── ...
+└── onnx/                        # ONNXモデル（Hugging Faceから）
+    ├── campplus.onnx            # 28MB - 話者埋め込み抽出
+    ├── speech_tokenizer_v3.onnx # 969MB - 音声トークン化
+    ├── text_embedding_fp32.onnx # 544MB - テキスト埋め込み
+    ├── llm_backbone_initial_fp16.onnx  # 717MB - LLM初回パス
+    ├── llm_backbone_decode_fp16.onnx   # 717MB - LLMデコードステップ
+    ├── llm_decoder_fp16.onnx           # 12MB  - logits出力
+    ├── llm_speech_embedding_fp16.onnx  # 12MB  - 音声トークン埋め込み
+    ├── flow_token_embedding_fp16.onnx  # 1MB   - Flowトークン埋め込み
+    ├── flow_pre_lookahead_fp16.onnx    # 1MB   - Flow Pre-lookahead
+    ├── flow_speaker_projection_fp16.onnx # 31KB - 話者投影
+    ├── flow.decoder.estimator.fp16.onnx  # 664MB - Flow DiT
+    ├── hift_f0_predictor_fp32.onnx     # 13MB  - F0予測
+    ├── hift_source_generator_fp32.onnx # 259MB - ソース生成
+    └── hift_decoder_fp32.onnx          # 70MB  - HiFTデコーダー
 ```
 
 ---

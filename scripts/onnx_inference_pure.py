@@ -88,8 +88,10 @@ class PureOnnxCosyVoice3:
         print("  Text embedding loaded")
 
         # Audio processing models (for prompt audio)
-        # Try original FP32 models first, then onnx directory
+        # Try multiple locations: model_dir first, then onnx_dir
         campplus_path = os.path.join(self.model_dir, 'campplus.onnx')
+        if not os.path.exists(campplus_path):
+            campplus_path = os.path.join(self.onnx_dir, 'campplus.onnx')
         if not os.path.exists(campplus_path):
             campplus_path = os.path.join(self.onnx_dir, f'campplus{suffix}.onnx')
         if os.path.exists(campplus_path):
@@ -100,6 +102,8 @@ class PureOnnxCosyVoice3:
             print("  Campplus not found (prompt audio disabled)")
 
         speech_tokenizer_path = os.path.join(self.model_dir, 'speech_tokenizer_v3.onnx')
+        if not os.path.exists(speech_tokenizer_path):
+            speech_tokenizer_path = os.path.join(self.onnx_dir, 'speech_tokenizer_v3.onnx')
         if not os.path.exists(speech_tokenizer_path):
             speech_tokenizer_path = os.path.join(self.onnx_dir, f'speech_tokenizer_v3{suffix}.onnx')
         if os.path.exists(speech_tokenizer_path):
