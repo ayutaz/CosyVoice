@@ -50,32 +50,35 @@ cd cosyvoice-onnx
 uv python pin 3.10
 
 # 必要なパッケージのインストール（バージョン指定重要）
-uv add "onnxruntime==1.18.0" "numpy<2" soundfile librosa transformers scipy modelscope huggingface_hub
+uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.2" "transformers==4.51.3" "scipy==1.13.1" "modelscope==1.20.0" "huggingface_hub==0.26.2"
 ```
 
 **重要: バージョン互換性**
-- `onnxruntime==1.18.0`: 新しいバージョン(1.20+)はFP16モデルと互換性問題あり
-- `numpy<2`: ONNX Runtime 1.18.0はNumPy 2.xと非互換
+
+オリジナルのCosyVoice（PyTorch版）も同じバージョン制約があります。これはONNX推論固有の制限ではありません。
+
+- `onnxruntime==1.18.0`: 新しいバージョン(1.19+)はFP16モデルと互換性問題あり
+- `numpy==1.26.4`: ONNX Runtime 1.18.0はNumPy 2.xと非互換（本家CosyVoiceも同じ）
 
 **パッケージ説明:**
-| パッケージ | 用途 |
-|-----------|------|
-| `onnxruntime==1.18.0` | ONNX推論エンジン（バージョン固定） |
-| `numpy<2` | 数値計算（1.x系必須） |
-| `soundfile` | WAVファイル出力 |
-| `librosa` | 音声読み込み、メルスペクトログラム抽出 |
-| `transformers` | Qwen2トークナイザー |
-| `scipy` | 信号処理（zoom等） |
-| `modelscope` | モデルダウンロード |
-| `huggingface_hub` | Hugging Faceからのダウンロード |
+| パッケージ | バージョン | 用途 |
+|-----------|-----------|------|
+| `onnxruntime` | 1.18.0 | ONNX推論エンジン |
+| `numpy` | 1.26.4 | 数値計算（1.x系必須） |
+| `soundfile` | 0.12.1 | WAVファイル出力 |
+| `librosa` | 0.10.2 | 音声読み込み、メルスペクトログラム抽出 |
+| `transformers` | 4.51.3 | Qwen2トークナイザー |
+| `scipy` | 1.13.1 | 信号処理（zoom等） |
+| `modelscope` | 1.20.0 | モデルダウンロード |
+| `huggingface_hub` | 0.26.2 | Hugging Faceからのダウンロード |
 
 **GPU使用時（オプション）:**
 ```bash
-# CUDA対応版（バージョン固定）
-uv add "onnxruntime-gpu==1.18.0"
-# または
+# CUDA対応版（バージョン固定必須）
 uv remove onnxruntime && uv add "onnxruntime-gpu==1.18.0"
 ```
+
+**注意**: `onnxruntime-gpu` も必ず 1.18.0 を使用してください。
 
 ### 2.4 推論スクリプトの配置
 
@@ -349,6 +352,22 @@ onnxruntime.capi.onnxruntime_pybind11_state.Fail: Failed to allocate memory
 **解決策**:
 - 他のアプリケーションを終了する
 - `--fp32` オプションを外してFP16を使用する
+
+### 9.4 ONNX Runtimeバージョンエラー（FP16モデル）
+
+```
+RuntimeException: Attempting to get index by a name which does not exist
+```
+
+**解決策**: `onnxruntime==1.18.0` を使用してください。1.19以降はFP16モデルと互換性問題があります。
+
+### 9.5 NumPy 2.x非互換エラー
+
+```
+A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x
+```
+
+**解決策**: `numpy==1.26.4` を使用してください。これはONNX推論固有の制限ではなく、オリジナルのCosyVoice（PyTorch版）も同じ制約があります。
 
 ---
 
