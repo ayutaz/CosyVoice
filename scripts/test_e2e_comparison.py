@@ -29,8 +29,8 @@ ONNX_DIR = os.path.join(MODEL_DIR, 'onnx')
 
 def load_cosyvoice():
     """Load CosyVoice model"""
-    from cosyvoice.cli.cosyvoice import AutoModel
-    return AutoModel(MODEL_DIR)
+    from cosyvoice.cli.cosyvoice import CosyVoice3
+    return CosyVoice3(MODEL_DIR)
 
 
 def test_llm_output_comparison():
