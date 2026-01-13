@@ -3,23 +3,33 @@
 # Apache License 2.0
 
 """
-Pure ONNX CosyVoice3 Inference (No PyTorch model loading)
+Pure ONNX CosyVoice3 Inference (No PyTorch model loading) - Zero-Shot Mode
 
-This script performs TTS inference using ONLY ONNX models.
+This script performs TTS inference using ONLY ONNX models in zero-shot voice cloning mode.
 Suitable for porting to Unity Sentis.
 
-IMPORTANT: CosyVoice is a voice cloning TTS system. A prompt audio file is REQUIRED
-for proper inference. Without prompt audio, the output will have poor quality
-(random voice, unnatural prosody, "a~" sound at the beginning).
+IMPORTANT: CosyVoice is a voice cloning TTS system. Both prompt audio AND prompt text
+are REQUIRED for proper inference. This uses the zero-shot mode which provides better
+voice cloning quality than cross-lingual mode.
+
+NOTE: Do NOT include language tags like <|en|> or <|ja|> in the text. CosyVoice3
+automatically detects the language from the text content. Language tags will be
+pronounced as literal text.
 
 Usage:
-    python scripts/onnx_inference_pure.py --text "<|en|>Hello world" --prompt_wav asset/cross_lingual_prompt.wav
-    python scripts/onnx_inference_pure.py --text "<|ja|>こんにちは" --prompt_wav my_voice.wav
+    python scripts/onnx_inference_pure.py \\
+        --text "Hello world" \\
+        --prompt_wav asset/prompts/en_female_nova_greeting.wav \\
+        --prompt_text "Hello, my name is Sarah."
 
-Prompt Audio Requirements:
-    - Duration: 3-10 seconds recommended
-    - Format: WAV (other formats supported via librosa)
-    - Quality: Clear speech, minimal background noise
+    python scripts/onnx_inference_pure.py \\
+        --text "こんにちは、今日はいい天気ですね。" \\
+        --prompt_wav my_voice.wav \\
+        --prompt_text "Recording text that matches the prompt audio"
+
+Requirements:
+    - Prompt audio: 3-10 seconds recommended, clear speech, minimal noise
+    - Prompt text: Transcript of the prompt audio content
 """
 
 import argparse
@@ -76,7 +86,25 @@ class PureOnnxCosyVoice3:
 
         so = ort.SessionOptions()
         so.log_severity_level = 3
+
+        # Try to use CUDA if available and working
         providers = ['CPUExecutionProvider']
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            try:
+                # Test if CUDA actually works
+                test_session = ort.InferenceSession(
+                    os.path.join(self.onnx_dir, 'text_embedding_fp32.onnx'),
+                    so, providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+                )
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                print("  Using CUDA GPU acceleration")
+                del test_session
+            except Exception as e:
+                print(f"  CUDA not available ({str(e)[:50]}...), using CPU")
+                providers = ['CPUExecutionProvider']
+        else:
+            print("  Using CPU (CUDA not available)")
 
         print("Loading ONNX models...")
 
@@ -275,27 +303,61 @@ class PureOnnxCosyVoice3:
     def llm_inference(
         self,
         text: str,
+        prompt_text: str,
+        prompt_speech_tokens: np.ndarray,
         sampling_k: int = 25,
         max_len: int = 500,
         min_len: int = 10
     ) -> np.ndarray:
-        """Generate speech tokens using pure ONNX"""
+        """Generate speech tokens using pure ONNX (zero-shot mode)
+
+        Args:
+            text: Text to synthesize (with language tag)
+            prompt_text: Transcript of the prompt audio
+            prompt_speech_tokens: Speech tokens from prompt audio [1, seq_len]
+            sampling_k: Top-k sampling parameter
+            max_len: Maximum output length
+            min_len: Minimum output length
+
+        Returns:
+            Generated speech tokens [1, seq_len]
+        """
         print("  Tokenizing text...")
 
-        # Tokenize text
-        text_tokens = self.tokenize_text(text)
-        text_len = text_tokens.shape[1]
-        print(f"    Text tokens: {text_len}")
+        # Tokenize prompt_text and text
+        prompt_text_tokens = self.tokenize_text(prompt_text)
+        tts_text_tokens = self.tokenize_text(text)
 
-        # Get text embedding
-        text_emb = self.get_text_embedding(text_tokens)
+        prompt_text_len = prompt_text_tokens.shape[1]
+        tts_text_len = tts_text_tokens.shape[1]
+
+        # Concatenate prompt_text and tts_text tokens (zero-shot mode)
+        combined_text_tokens = np.concatenate([prompt_text_tokens, tts_text_tokens], axis=1)
+        combined_text_len = combined_text_tokens.shape[1]
+        print(f"    Prompt text tokens: {prompt_text_len}, TTS text tokens: {tts_text_len}, Combined: {combined_text_len}")
+
+        # Get text embedding for combined text
+        text_emb = self.get_text_embedding(combined_text_tokens)
+
+        # Note: In PyTorch, speaker embedding goes through spk_embed_affine_layer (Linear 192->896)
+        # but those weights are not saved in llm.pt checkpoint.
+        # For zero-shot mode, the key information comes from prompt_text and prompt_speech_tokens,
+        # so we skip the speaker embedding in LLM (use zero-length embedding like PyTorch does when embedding.shape[0]==0)
 
         # Get SOS and TASK_ID embeddings
         sos_emb = self.get_speech_embedding(np.array([[self.sos]], dtype=np.int64))
         task_id_emb = self.get_speech_embedding(np.array([[self.task_id]], dtype=np.int64))
 
-        # Build initial input: [SOS, text_emb, TASK_ID]
-        lm_input = np.concatenate([sos_emb, text_emb, task_id_emb], axis=1).astype(np.float32)
+        # Get prompt speech token embedding
+        if prompt_speech_tokens is not None and prompt_speech_tokens.shape[1] > 0:
+            prompt_speech_emb = self.get_speech_embedding(prompt_speech_tokens)
+            print(f"    Prompt speech tokens: {prompt_speech_tokens.shape[1]}")
+        else:
+            prompt_speech_emb = np.zeros((1, 0, self.hidden_dim), dtype=np.float32)
+
+        # Build initial input: [SOS, text_emb, TASK_ID, prompt_speech_emb] (zero-shot mode)
+        # Note: We skip embedding here since spk_embed_affine_layer weights are not available
+        lm_input = np.concatenate([sos_emb, text_emb, task_id_emb, prompt_speech_emb], axis=1).astype(np.float32)
 
         # Initial forward pass
         seq_len = lm_input.shape[1]
@@ -320,9 +382,9 @@ class PureOnnxCosyVoice3:
             None, {'hidden_state': hidden_states[:, -1:, :]}
         )[0]
 
-        # Calculate min/max length
-        min_len = max(min_len, int(text_len * 2))
-        max_len = min(max_len, int(text_len * 20))
+        # Calculate min/max length based on TTS text (not including prompt text)
+        min_len = max(min_len, int(tts_text_len * 2))
+        max_len = min(max_len, int(tts_text_len * 20))
         print(f"    Generating {min_len}-{max_len} tokens...")
 
         out_tokens = []
@@ -645,20 +707,21 @@ class PureOnnxCosyVoice3:
             audio_len = mel.shape[2] * 256
             return np.random.randn(audio_len).astype(np.float32) * 0.01
 
-    def inference(self, text: str, prompt_wav: str) -> np.ndarray:
-        """Full TTS inference using pure ONNX
+    def inference(self, text: str, prompt_wav: str, prompt_text: str) -> np.ndarray:
+        """Full TTS inference using pure ONNX (zero-shot mode)
 
         Args:
             text: Text to synthesize (with language tag, e.g., "<|en|>Hello")
             prompt_wav: Path to prompt audio file for voice cloning (REQUIRED)
+            prompt_text: Transcript of the prompt audio (REQUIRED for zero-shot mode)
 
         Returns:
             Audio waveform as numpy array
 
         Raises:
-            ValueError: If prompt_wav is not provided or file doesn't exist
+            ValueError: If prompt_wav or prompt_text is not provided
         """
-        # Validate prompt audio (required for proper inference)
+        # Validate inputs (required for zero-shot mode)
         if not prompt_wav:
             raise ValueError(
                 "prompt_wav is required for CosyVoice inference. "
@@ -667,9 +730,15 @@ class PureOnnxCosyVoice3:
             )
         if not os.path.exists(prompt_wav):
             raise ValueError(f"Prompt audio file not found: {prompt_wav}")
+        if not prompt_text:
+            raise ValueError(
+                "prompt_text is required for zero-shot mode. "
+                "Please provide the transcript of the prompt audio."
+            )
 
         print(f"\nInput text: {text}")
         print(f"Prompt audio: {prompt_wav}")
+        print(f"Prompt text: {prompt_text}")
         start_time = time.time()
 
         # Process prompt audio (required)
@@ -680,7 +749,7 @@ class PureOnnxCosyVoice3:
         embedding = self.extract_speaker_embedding(prompt_wav)
         print(f"   Speaker embedding: {embedding.shape}")
 
-        # Extract speech tokens for flow
+        # Extract speech tokens for LLM and flow
         prompt_tokens = self.extract_speech_tokens(prompt_wav)
         print(f"   Prompt speech tokens: {prompt_tokens.shape} ({prompt_tokens.shape[1]} tokens)")
 
@@ -691,10 +760,17 @@ class PureOnnxCosyVoice3:
         prompt_time = time.time() - prompt_start
         print(f"   Prompt processing time: {prompt_time:.2f}s")
 
-        # Step 1: LLM inference
-        print("\n1. Running LLM (ONNX)...")
+        # Step 1: LLM inference (zero-shot mode with prompt_text and prompt_speech_tokens)
+        print("\n1. Running LLM (ONNX) - Zero-shot mode...")
         llm_start = time.time()
-        speech_tokens = self.llm_inference(text, sampling_k=25, max_len=500, min_len=10)
+        speech_tokens = self.llm_inference(
+            text,
+            prompt_text=prompt_text,
+            prompt_speech_tokens=prompt_tokens,
+            sampling_k=25,
+            max_len=500,
+            min_len=10
+        )
         llm_time = time.time() - llm_start
         print(f"   LLM time: {llm_time:.2f}s")
 
@@ -741,25 +817,38 @@ class PureOnnxCosyVoice3:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Pure ONNX CosyVoice3 TTS Inference (Voice Cloning)',
+        description='Pure ONNX CosyVoice3 TTS Inference (Zero-Shot Voice Cloning)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/onnx_inference_pure.py --text "<|en|>Hello world" --prompt_wav asset/cross_lingual_prompt.wav
-  python scripts/onnx_inference_pure.py --text "<|ja|>こんにちは" --prompt_wav my_voice.wav --output output.wav
+  python scripts/onnx_inference_pure.py \\
+      --text "Hello, this is a test." \\
+      --prompt_wav asset/prompts/en_female_nova_greeting.wav \\
+      --prompt_text "Hello, my name is Sarah."
+
+  python scripts/onnx_inference_pure.py \\
+      --text "こんにちは、今日はいい天気ですね。" \\
+      --prompt_wav my_voice.wav \\
+      --prompt_text "Your prompt audio transcript here" \\
+      --output output.wav
 
 Note:
-  CosyVoice is a voice cloning TTS system. A prompt audio file (3-10 seconds) is REQUIRED
-  to specify the target voice characteristics. Without prompt audio, the output will be
-  unusable (random voice, poor quality).
+  CosyVoice3 uses zero-shot voice cloning. Both prompt audio AND prompt text (transcript)
+  are REQUIRED for proper inference. The prompt text should match what is spoken in the
+  prompt audio file.
+
+  Do NOT include language tags like <|en|> or <|ja|> - they will be pronounced as text.
+  CosyVoice3 automatically detects the language.
         """
     )
     parser.add_argument('--model_dir', type=str, default='pretrained_models/Fun-CosyVoice3-0.5B',
                         help='Path to model directory')
-    parser.add_argument('--text', type=str, default='<|en|>Hello, this is a test of pure ONNX inference.',
-                        help='Text to synthesize (include language tag like <|en|>, <|ja|>, etc.)')
+    parser.add_argument('--text', type=str, default='Hello, this is a test of pure ONNX inference.',
+                        help='Text to synthesize (do NOT include language tags)')
     parser.add_argument('--prompt_wav', type=str, required=True,
                         help='Path to prompt audio for voice cloning (REQUIRED, 3-10 seconds recommended)')
+    parser.add_argument('--prompt_text', type=str, required=True,
+                        help='Transcript of the prompt audio (REQUIRED for zero-shot mode)')
     parser.add_argument('--output', type=str, default='output_onnx_pure.wav',
                         help='Output audio file path')
     parser.add_argument('--fp32', action='store_true',
@@ -768,19 +857,20 @@ Note:
     args = parser.parse_args()
 
     print("=" * 60)
-    print("Pure ONNX CosyVoice3 Inference")
+    print("Pure ONNX CosyVoice3 Inference (Zero-Shot Mode)")
     print("=" * 60)
     print(f"Model: {args.model_dir}")
     print(f"Text: {args.text}")
-    print(f"Prompt: {args.prompt_wav}")
+    print(f"Prompt audio: {args.prompt_wav}")
+    print(f"Prompt text: {args.prompt_text}")
     print(f"Use FP16: {not args.fp32}")
     print()
 
     # Create engine
     engine = PureOnnxCosyVoice3(args.model_dir, use_fp16=not args.fp32)
 
-    # Run inference
-    audio = engine.inference(args.text, prompt_wav=args.prompt_wav)
+    # Run inference (zero-shot mode)
+    audio = engine.inference(args.text, prompt_wav=args.prompt_wav, prompt_text=args.prompt_text)
 
     # Save output
     sf.write(args.output, audio, engine.sample_rate)

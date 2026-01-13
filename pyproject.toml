@@ -49,14 +49,13 @@ dependencies = [
     # Training
     "lightning==2.2.4",
     "tensorboard==2.14.0",
-    # ONNX Runtime (CPU/DirectML for Windows/Mac)
-    "onnxruntime==1.18.0",
     "ruamel-yaml<0.18",
     "pyopenjtalk-plus>=0.4.1.post7",
     "optimum>=2.1.0",
     "onnxconverter-common>=1.16.0",
     "openai>=2.15.0",
     "huggingface-hub>=0.36.0",
+    "onnxruntime==1.18.0",
 ]
 
 # Note: For Linux training with GPU acceleration, manually install:

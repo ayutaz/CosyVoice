@@ -11,6 +11,11 @@
 
 CosyVoice3の全パイプラインをONNX形式でエクスポートし、PyTorchなしで完全なTTS推論を実現する。
 
+**達成状況**: ✅ 完了
+- 全14個のONNXモデルをエクスポート
+- STFT/ISTFTをNumPyで実装（PyTorch不要）
+- 新規環境でPyTorchなしでの動作を確認済み
+
 ### 1.2 パイプライン構成
 
 ```
@@ -240,12 +245,20 @@ mel [1, 80, T]
 [ISTFT] → audio [T*256]
 ```
 
-### 5.2 STFT/ISTFTパラメータ
+### 5.2 STFT/ISTFTパラメータ（CosyVoice3固有）
 
 ```python
 n_fft = 16
 hop_len = 4
+center = True  # PyTorchデフォルトと同じパディング
 audio_limit = 0.99  # 出力クリッピング
+
+# HiFT upsample_rates (CosyVoice3)
+upsample_rates = [8, 5, 3]  # 合計120倍
+# 注: CosyVoice2は[8, 8]で64倍
+
+# 期待されるSTFTフレーム数
+stft_frames = mel_frames * 120 + 1
 ```
 
 ### 5.3 FP32が必要な理由
@@ -261,23 +274,69 @@ FP32 max diff: 0.002655
 
 **解決策**: HiFT全体をFP32で維持する。
 
-### 5.4 STFT/ISTFT実装
+### 5.4 STFT/ISTFT実装（Pure NumPy）
 
-PyTorchのtorch.stft/istftとの完全互換性のため、scipy.signalではなくtorchを使用:
+PyTorchフリー環境のため、NumPy/SciPyでSTFT/ISTFTを実装。PyTorchの`center=True`デフォルトと互換性を保つ:
 
 ```python
-def _stft(self, x, n_fft=16, hop_len=4):
-    import torch
+def _stft(self, x: np.ndarray, n_fft: int = 16, hop_len: int = 4, center: bool = True) -> tuple:
+    """NumPyベースSTFT（PyTorch互換）"""
     from scipy.signal import get_window
 
-    window = torch.from_numpy(get_window("hann", n_fft, fftbins=True).astype(np.float32))
-    x_t = torch.from_numpy(x.astype(np.float32))
+    window = get_window("hann", n_fft, fftbins=True).astype(np.float32)
+    x = x.astype(np.float32)
 
-    spec = torch.stft(x_t, n_fft, hop_len, n_fft, window=window, return_complex=True)
-    spec = torch.view_as_real(spec)
+    # PyTorchのcenter=Trueと同じパディング
+    if center:
+        pad_len = n_fft // 2
+        x = np.pad(x, (pad_len, pad_len), mode='reflect')
 
-    return spec[..., 0].numpy(), spec[..., 1].numpy()  # real, imag
+    n_frames = 1 + (len(x) - n_fft) // hop_len
+    n_freqs = n_fft // 2 + 1
+    real = np.zeros((n_freqs, n_frames), dtype=np.float32)
+    imag = np.zeros((n_freqs, n_frames), dtype=np.float32)
+
+    for i in range(n_frames):
+        start = i * hop_len
+        frame = x[start:start + n_fft] * window
+        spectrum = np.fft.rfft(frame)
+        real[:, i] = np.real(spectrum)
+        imag[:, i] = np.imag(spectrum)
+
+    return real, imag
+
+def _istft(self, real: np.ndarray, imag: np.ndarray, n_fft: int = 16, hop_len: int = 4, center: bool = True) -> np.ndarray:
+    """NumPyベースISTFT（PyTorch互換）"""
+    from scipy.signal import get_window
+
+    window = get_window("hann", n_fft, fftbins=True).astype(np.float32)
+    complex_spec = real + 1j * imag  # [n_freqs, n_frames]
+    n_frames = complex_spec.shape[1]
+
+    # 出力長を計算（パディング込み）
+    output_length = n_fft + (n_frames - 1) * hop_len
+    output = np.zeros(output_length, dtype=np.float32)
+    window_sum = np.zeros(output_length, dtype=np.float32)
+
+    for i in range(n_frames):
+        start = i * hop_len
+        frame = np.fft.irfft(complex_spec[:, i], n=n_fft).astype(np.float32)
+        output[start:start + n_fft] += frame * window
+        window_sum[start:start + n_fft] += window ** 2
+
+    # 窓関数の正規化
+    window_sum = np.maximum(window_sum, 1e-8)
+    output = output / window_sum
+
+    # center=Trueの場合、パディング除去
+    if center:
+        pad_len = n_fft // 2
+        output = output[pad_len:-pad_len] if len(output) > 2 * pad_len else output
+
+    return output
 ```
+
+**注意**: この実装はPyTorchを必要とせず、完全にNumPy/SciPyで動作します。
 
 ---
 
@@ -309,17 +368,24 @@ F0 Predictorの中間層で値が非常に大きくなり（最大20319）、FP1
 **解決策**:
 HiFT全コンポーネント（F0 Predictor, Source Generator, Decoder）をFP32で維持。
 
-### 6.3 STFT/ISTFT互換性問題
+### 6.3 STFT/ISTFT互換性問題（解決済み）
 
 **症状**:
 - 音声の振幅が異常（-24〜+24の範囲）
 - ノイズが多い
+- Griffin-Limフォールバック時に音声がこもる
 
 **原因**:
-scipy.signal.stftとtorch.stftの正規化が異なる。
+1. scipy.signal.stftとtorch.stftの正規化が異なる
+2. PyTorchのデフォルト`center=True`によるパディングを考慮していなかった
+3. CosyVoice3のupsample_rates=[8,5,3]（120倍）を[8,8]（64倍）と誤認
 
 **解決策**:
-numpy配列をtorchに変換してtorch.stft/istftを使用し、PyTorch HiFTと完全に同じ処理を行う。
+1. NumPy/SciPyで`center=True`パディング付きSTFT/ISTFTを実装
+2. 正しいパラメータを使用: n_fft=16, hop_len=4, center=True
+3. 期待フレーム数 = mel_frames × 120 + 1 で検証
+
+**結果**: PyTorchなしで高品質な音声生成を実現。
 
 ### 6.4 先頭トークン発音問題（調査完了）
 
@@ -455,10 +521,13 @@ mel = mel[:, :, mel_len1:]  # generated部分のみ抽出
 ### 8.2 C#で実装が必要な部分
 
 1. **トークナイザー**: Qwen2 BPEトークナイザーのC#実装
-2. **STFT/ISTFT**: n_fft=16, hop_len=4のミニISTFT
+2. **STFT/ISTFT**: n_fft=16, hop_len=4, center=TrueのミニSTFT/ISTFT
+   - Python実装（`onnx_inference_pure.py`の`_stft`/`_istft`）を参照
+   - 16点FFTで計算量は少ない
 3. **Top-K サンプリング**: 確率的トークン選択
 4. **Euler Solver**: Flow Matchingの数値積分
 5. **KVキャッシュ管理**: テンソル連結と更新
+6. **メル特徴量抽出**: プロンプト音声からメルスペクトログラム生成（librosa互換）
 
 ### 8.3 注意点
 

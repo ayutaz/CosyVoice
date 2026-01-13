@@ -39,19 +39,15 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2.3 Python環境の構築（ONNX推論専用）
 
 ```bash
-# 新規プロジェクトの作成
-uv init cosyvoice-onnx
+# 新規プロジェクトの作成（Python 3.10を指定）
+uv init cosyvoice-onnx --python 3.10
 cd cosyvoice-onnx
-
-# pyproject.tomlのrequires-pythonを修正（uv initのデフォルトは>=3.13）
-# requires-python = ">=3.10" に変更する
-
-# Python 3.10を指定
-uv python pin 3.10
 
 # 必要なパッケージのインストール（バージョン指定重要）
 uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.2" "transformers==4.51.3" "scipy==1.13.1" "modelscope==1.20.0" "huggingface_hub>=0.30.0"
 ```
+
+**注意**: `--python 3.10`フラグは必須です。onnxruntime 1.18.0はPython 3.8〜3.12のみサポートしています。
 
 **重要: バージョン互換性**
 
@@ -119,7 +115,7 @@ uv run python -c "from huggingface_hub import snapshot_download; snapshot_downlo
 ONNXモデルに加えて、Qwen2トークナイザーが必要です：
 
 ```bash
-uv run python -c "from modelscope import snapshot_download; snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512', local_dir='pretrained_models/Fun-CosyVoice3-0.5B', allow_patterns=['CosyVoice-BlankEN/*'])"
+uv run python -c "from modelscope import snapshot_download; snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512', local_dir='pretrained_models/Fun-CosyVoice3-0.5B', allow_patterns=['CosyVoice-BlankEN/*.json', 'CosyVoice-BlankEN/*.txt'])"
 ```
 
 ### 3.3 ファイル配置の確認
@@ -152,16 +148,19 @@ pretrained_models/Fun-CosyVoice3-0.5B/
 
 ## 4. 推論の実行
 
-### 4.1 基本的な使い方
+### 4.1 基本的な使い方（Zero-Shotモード）
+
+CosyVoice3はZero-Shot音声クローニングを使用します。プロンプト音声とその文字起こし（prompt_text）が必須です。
 
 ```bash
 # Windows PowerShell（1行で実行）
-uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|en|>Hello, this is a test." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --output output.wav
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "Hello, this is a test." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --prompt_text "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions." --output output.wav
 
 # Linux/macOS
 uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py \
-    --text "<|en|>Hello, this is a test." \
+    --text "Hello, this is a test." \
     --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav \
+    --prompt_text "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions." \
     --output output.wav
 ```
 
@@ -169,35 +168,34 @@ uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_
 
 | 引数 | 必須 | 説明 |
 |------|------|------|
-| `--text` | Yes | 合成するテキスト（言語タグ付き） |
+| `--text` | Yes | 合成するテキスト（言語タグは**不要**） |
 | `--prompt_wav` | Yes | プロンプト音声ファイルのパス |
+| `--prompt_text` | Yes | プロンプト音声の文字起こし |
 | `--output` | No | 出力ファイルパス（デフォルト: output_onnx_pure.wav） |
 | `--model_dir` | No | モデルディレクトリ（デフォルト: pretrained_models/Fun-CosyVoice3-0.5B） |
 | `--fp32` | No | FP32精度を使用（デフォルト: FP16） |
 
-### 4.3 言語タグ
+### 4.3 言語について
 
-テキストの先頭に言語タグを付ける：
+**重要**: CosyVoice3は言語を自動検出します。`<|en|>`や`<|ja|>`などの言語タグは**使用しないでください**。これらはテキストとして発音されてしまいます。
 
-| 言語 | タグ | 例 |
-|------|------|-----|
-| 英語 | `<\|en\|>` | `<\|en\|>Hello world.` |
-| 日本語 | `<\|ja\|>` | `<\|ja\|>こんにちは。` |
-| 中国語 | `<\|zh\|>` | `<\|zh\|>你好。` |
-| 韓国語 | `<\|ko\|>` | `<\|ko\|>안녕하세요.` |
+対応言語：
+- 英語、中国語、日本語、韓国語
+- ドイツ語、スペイン語、フランス語、イタリア語、ロシア語
+- 広東語など中国方言
 
 ---
 
-## 5. プロンプト音声
+## 5. プロンプト音声とプロンプトテキスト
 
 ### 5.1 重要事項
 
-CosyVoiceは音声クローニングTTSシステムのため、**プロンプト音声は必須**です。
+CosyVoice3はZero-Shot音声クローニングTTSシステムのため、**プロンプト音声**と**プロンプトテキスト**の両方が必須です。
 
-プロンプト音声なしでは：
-- ランダムな話者特性になる
-- 音声品質が低下する
-- 先頭に「a~」のような異音が発生する
+- **プロンプト音声**: 参照となる音声サンプル
+- **プロンプトテキスト**: プロンプト音声の内容の文字起こし
+
+これにより高品質な音声クローニングが実現されます。
 
 ### 5.2 プロンプト音声の要件
 
@@ -229,25 +227,38 @@ CosyVoiceは音声クローニングTTSシステムのため、**プロンプト
 
 ## 6. 実行例
 
+サンプルプロンプト音声のテキスト:
+- `en_female_nova_greeting.wav`: "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions."
+- `en_male_onyx_greeting.wav`: "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions."
+
 ### 6.1 英語（女性ボイス）
 
 ```bash
-# Windows PowerShell
-uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|en|>Welcome to the future of voice synthesis." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --output english_female.wav
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py \
+    --text "Welcome to the future of voice synthesis." \
+    --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav \
+    --prompt_text "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions." \
+    --output english_female.wav
 ```
 
 ### 6.2 英語（男性ボイス）
 
 ```bash
-# Windows PowerShell
-uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|en|>This is a demonstration of voice cloning technology." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_male_onyx_greeting.wav --output english_male.wav
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py \
+    --text "This is a demonstration of voice cloning technology." \
+    --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_male_onyx_greeting.wav \
+    --prompt_text "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions." \
+    --output english_male.wav
 ```
 
 ### 6.3 日本語
 
 ```bash
-# Windows PowerShell
-uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|ja|>これは音声合成のテストです。" --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --output japanese.wav
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py \
+    --text "これは音声合成のテストです。" \
+    --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav \
+    --prompt_text "Hello, my name is Sarah. I'm excited to help you with your project today. Let me know if you have any questions." \
+    --output japanese.wav
 ```
 
 ---
@@ -257,12 +268,12 @@ uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_
 ```
 1. プロンプト音声処理
    ├── campplus.onnx → 話者埋め込み抽出 (192次元)
-   ├── speech_tokenizer_v3.onnx → 音声トークン抽出
-   └── librosa → メルスペクトログラム抽出
+   ├── speech_tokenizer_v3.onnx → 音声トークン抽出（LLMコンテキスト用）
+   └── librosa → メルスペクトログラム抽出（Flow条件付け用）
 
-2. LLM推論（自己回帰生成）
-   ├── text_embedding → テキストトークン埋め込み
-   ├── llm_speech_embedding → 音声トークン埋め込み
+2. LLM推論（Zero-Shotモード）
+   ├── text_embedding → [prompt_text + tts_text] 埋め込み
+   ├── llm_speech_embedding → プロンプト音声トークン埋め込み
    ├── llm_backbone_initial → 初回パス（KVキャッシュ生成）
    ├── llm_backbone_decode → デコードステップ（繰り返し）
    └── llm_decoder → logits → トークンサンプリング
@@ -276,10 +287,27 @@ uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_
 4. HiFT推論（波形生成）
    ├── hift_f0_predictor → F0予測
    ├── hift_source_generator → ソース信号生成
-   ├── STFT → ソース信号のスペクトル分解
+   ├── STFT (numpy) → ソース信号のスペクトル分解
    ├── hift_decoder → マグニチュード・位相予測
-   └── ISTFT → 波形再構成
+   └── ISTFT (numpy) → 波形再構成
 ```
+
+### 7.1 完全なPyTorchフリー実装
+
+この推論スクリプトはPyTorch依存なしで動作します。すべての処理はONNX RuntimeとNumPy/SciPyで実装されています。
+
+**HiFT STFT/ISTFT パラメータ（CosyVoice3固有）:**
+
+| パラメータ | 値 | 説明 |
+|-----------|-----|------|
+| `upsample_rates` | [8, 5, 3] | HiFTアップサンプリング倍率（合計120倍） |
+| `n_fft` | 16 | FFTウィンドウサイズ |
+| `hop_length` | 4 | ホップ長 |
+| `center` | True | 信号のパディング（PyTorchと同じ） |
+
+**注意**: CosyVoice2ではupsample_rates=[8, 8]（64倍）ですが、CosyVoice3では[8, 5, 3]（120倍）です。
+
+期待されるSTFTフレーム数 = mel_frames × 120 + 1
 
 ---
 
@@ -314,15 +342,30 @@ Error: Model file not found
 
 **解決策**: モデルをダウンロードしてください（セクション3参照）
 
-### 9.2 プロンプト音声が必要
+### 9.2 プロンプト音声・テキストが必要
 
 ```
 ValueError: prompt_wav is required for CosyVoice inference.
+ValueError: prompt_text is required for zero-shot mode.
 ```
 
-**解決策**: `--prompt_wav` 引数でプロンプト音声を指定してください
+**解決策**: `--prompt_wav` と `--prompt_text` の両方を指定してください
 
-### 9.3 メモリ不足
+### 9.3 言語タグが発音される
+
+`<|en|>`や`<|ja|>`が音声として発音される場合。
+
+**解決策**: 言語タグをテキストから削除してください。CosyVoice3は言語を自動検出します。
+
+```bash
+# 間違い
+--text "<|en|>Hello world"
+
+# 正しい
+--text "Hello world"
+```
+
+### 9.4 メモリ不足
 
 ```
 onnxruntime.capi.onnxruntime_pybind11_state.Fail: Failed to allocate memory
@@ -332,7 +375,7 @@ onnxruntime.capi.onnxruntime_pybind11_state.Fail: Failed to allocate memory
 - 他のアプリケーションを終了する
 - `--fp32` オプションを外してFP16を使用する
 
-### 9.4 ONNX Runtimeバージョンエラー（FP16モデル）
+### 9.5 ONNX Runtimeバージョンエラー（FP16モデル）
 
 ```
 RuntimeException: Attempting to get index by a name which does not exist
