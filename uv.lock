@@ -310,8 +310,10 @@ dependencies = [
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "onnx" },
+    { name = "onnxconverter-common" },
     { name = "onnxruntime" },
     { name = "openai-whisper" },
+    { name = "optimum" },
     { name = "protobuf" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -353,8 +355,10 @@ requires-dist = [
     { name = "numpy", specifier = "==1.26.4" },
     { name = "omegaconf", specifier = "==2.3.0" },
     { name = "onnx", specifier = "==1.16.0" },
+    { name = "onnxconverter-common", specifier = ">=1.16.0" },
     { name = "onnxruntime", specifier = "==1.18.0" },
     { name = "openai-whisper", specifier = "==20231117" },
+    { name = "optimum", specifier = ">=2.1.0" },
     { name = "protobuf", specifier = "==4.25" },
     { name = "pyarrow", specifier = "==18.1.0" },
     { name = "pydantic", specifier = "==2.7.0" },
@@ -1400,6 +1404,20 @@ wheels = [
 ]
 
 [[package]]
+name = "onnxconverter-common"
+version = "1.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "packaging" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/67/8dca1868a6e226f8d3f7d666cb6a48b79a60aad5267b16b24627cd8d9eb8/onnxconverter_common-1.16.0-py2.py3-none-any.whl", hash = "sha256:df39ee96f17fff119dff10dd245467651b60b9e8a96020eb93402239794852f7", size = 89511, upload-time = "2025-08-28T19:37:46.988Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1433,6 +1451,23 @@ dependencies = [
     { name = "tqdm" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d2/6e/50ace2bf704e5ffc786d20d96403ab0d57c5d6ab8729de7fed8c436687df/openai-whisper-20231117.tar.gz", hash = "sha256:7af424181436f1800cc0b7d75cf40ede34e9ddf1ba4983a910832fcf4aade4a4", size = 798593, upload-time = "2023-11-17T19:59:56.498Z" }
+
+[[package]]
+name = "optimum"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "torch", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'" },
+    { name = "torch", version = "2.3.1+cu121", source = { registry = "https://download.pytorch.org/whl/cu121" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f0/69/e1e9fe4d54f6b1b90cc278d6da74dd90eb4d9fd9228882886d7c275712e2/optimum-2.1.0.tar.gz", hash = "sha256:0a2a13f91500e41d34863ffdb08fcb886b3ce68a84a386e59653e3064a45dd4b", size = 125896, upload-time = "2025-12-19T10:47:18.571Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/98/c409ed937331839fdadc03cef6ebd19982bf3834711134db8898eeb31585/optimum-2.1.0-py3-none-any.whl", hash = "sha256:bc3af32e1236a9b2c2ca1d27ed9d3ab1b6591e24c6bcd47f9671a8198a30ea88", size = 161231, upload-time = "2025-12-19T10:47:17.054Z" },
+]
 
 [[package]]
 name = "orjson"
