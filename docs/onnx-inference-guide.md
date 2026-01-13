@@ -50,7 +50,7 @@ cd cosyvoice-onnx
 uv python pin 3.10
 
 # 必要なパッケージのインストール（バージョン指定重要）
-uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.2" "transformers==4.51.3" "scipy==1.13.1" "modelscope==1.20.0" "huggingface_hub==0.26.2"
+uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.2" "transformers==4.51.3" "scipy==1.13.1" "modelscope==1.20.0" "huggingface_hub>=0.30.0"
 ```
 
 **重要: バージョン互換性**
@@ -70,7 +70,7 @@ uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.
 | `transformers` | 4.51.3 | Qwen2トークナイザー |
 | `scipy` | 1.13.1 | 信号処理（zoom等） |
 | `modelscope` | 1.20.0 | モデルダウンロード |
-| `huggingface_hub` | 0.26.2 | Hugging Faceからのダウンロード |
+| `huggingface_hub` | >=0.30.0 | Hugging Faceからのダウンロード（transformers依存） |
 
 **GPU使用時（オプション）:**
 ```bash
