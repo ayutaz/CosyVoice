@@ -175,9 +175,19 @@ class PureOnnxCosyVoice3:
         seq_len = lm_input.shape[1]
         attention_mask = np.ones((1, seq_len), dtype=np.float32)
 
-        hidden_states = self.llm_backbone_initial.run(
+        initial_outputs = self.llm_backbone_initial.run(
             None, {'inputs_embeds': lm_input, 'attention_mask': attention_mask}
-        )[0]
+        )
+        hidden_states = initial_outputs[0]
+
+        # Get KV cache from initial pass (if available)
+        if len(initial_outputs) > 1:
+            past_key_values = initial_outputs[1]
+            print(f"    Initial KV cache shape: {past_key_values.shape}")
+        else:
+            # Fallback: create zeros cache (old behavior, will cause issues)
+            print("    WARNING: No KV cache from initial pass, using zeros")
+            past_key_values = np.zeros((48, 1, 2, seq_len, 64), dtype=np.float32)
 
         # Get initial logits
         logits = self.llm_decoder.run(
@@ -188,9 +198,6 @@ class PureOnnxCosyVoice3:
         min_len = max(min_len, int(text_len * 2))
         max_len = min(max_len, int(text_len * 20))
         print(f"    Generating {min_len}-{max_len} tokens...")
-
-        # Prepare KV cache
-        past_key_values = np.zeros((48, 1, 2, seq_len, 64), dtype=np.float32)
 
         out_tokens = []
         for i in range(max_len):

@@ -78,34 +78,51 @@ class LLMDecoderWrapper(nn.Module):
 
 class LLMBackboneInitialWrapper(nn.Module):
     """
-    Wrapper for initial LLM forward pass (no KV cache).
+    Wrapper for initial LLM forward pass (with KV cache output).
     Used for the first token generation.
+
+    Returns both hidden_states and KV cache for subsequent decode steps.
     """
 
-    def __init__(self, qwen2_model):
+    def __init__(self, qwen2_model, num_layers: int, num_heads: int, head_dim: int):
         super().__init__()
         self.model = qwen2_model
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.head_dim = head_dim
 
     def forward(
         self,
         inputs_embeds: torch.Tensor,
         attention_mask: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> tuple:
         """
         Args:
             inputs_embeds: [batch, seq_len, hidden_dim] input embeddings
             attention_mask: [batch, seq_len] attention mask (1 for valid, 0 for pad)
         Returns:
             hidden_states: [batch, seq_len, hidden_dim] output hidden states
+            past_key_values_flat: [num_layers * 2, batch, num_heads, seq_len, head_dim] KV cache
         """
         outputs = self.model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             output_hidden_states=True,
             return_dict=True,
-            use_cache=False,
+            use_cache=True,
         )
-        return outputs.hidden_states[-1]
+        hidden_states = outputs.hidden_states[-1]
+
+        # Flatten KV cache for ONNX
+        past_key_values = outputs.past_key_values
+        past_flat = []
+        for i in range(self.num_layers):
+            key, value = past_key_values[i]
+            past_flat.append(key)
+            past_flat.append(value)
+        past_key_values_flat = torch.stack(past_flat, dim=0)
+
+        return hidden_states, past_key_values_flat
 
 
 class LLMBackboneDecodeWrapper(nn.Module):
@@ -354,11 +371,19 @@ def export_llm_backbone_initial(
     fp16: bool = False,
     eager_qwen2: nn.Module = None
 ):
-    """Export LLM backbone initial pass (no KV cache)"""
+    """Export LLM backbone initial pass (with KV cache output)"""
 
     print(f"\n{'='*60}")
-    print("Exporting LLM Backbone (Initial Pass)")
+    print("Exporting LLM Backbone (Initial Pass with KV Cache)")
     print(f"{'='*60}")
+
+    # Get model config
+    config = get_qwen2_config(llm)
+    num_layers = config['num_layers']
+    num_heads = config['num_heads']
+    head_dim = config['head_dim']
+
+    print(f"Model config: {num_layers} layers, {num_heads} heads, {head_dim} head_dim")
 
     # Use eager_qwen2 if provided (it's already Qwen2Model), otherwise use original
     if eager_qwen2 is not None:
@@ -367,7 +392,8 @@ def export_llm_backbone_initial(
     else:
         qwen2_model = llm.llm.model
         print("Using original Qwen2Model (may use SDPA)")
-    wrapper = LLMBackboneInitialWrapper(qwen2_model)
+
+    wrapper = LLMBackboneInitialWrapper(qwen2_model, num_layers, num_heads, head_dim)
     wrapper.eval()
 
     # Dummy input
@@ -387,8 +413,10 @@ def export_llm_backbone_initial(
     print(f"  attention_mask: {attention_mask.shape}")
 
     with torch.no_grad():
-        output = wrapper(inputs_embeds, attention_mask)
-    print(f"Output shape: hidden_states {output.shape}")
+        hidden_states, past_kv = wrapper(inputs_embeds, attention_mask)
+    print(f"Output shapes:")
+    print(f"  hidden_states: {hidden_states.shape}")
+    print(f"  past_key_values: {past_kv.shape}")
 
     torch.onnx.export(
         wrapper,
@@ -396,11 +424,12 @@ def export_llm_backbone_initial(
         output_path,
         opset_version=opset_version,
         input_names=['inputs_embeds', 'attention_mask'],
-        output_names=['hidden_states'],
+        output_names=['hidden_states', 'past_key_values'],
         dynamic_axes={
             'inputs_embeds': {0: 'batch', 1: 'seq_len'},
             'attention_mask': {0: 'batch', 1: 'seq_len'},
-            'hidden_states': {0: 'batch', 1: 'seq_len'}
+            'hidden_states': {0: 'batch', 1: 'seq_len'},
+            'past_key_values': {1: 'batch', 3: 'seq_len'}
         },
         do_constant_folding=True,
     )
