@@ -78,31 +78,18 @@ uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.
 uv remove onnxruntime && uv add "onnxruntime-gpu==1.18.0"
 ```
 
-**注意**: `onnxruntime-gpu` も必ず 1.18.0 を使用してください。
-
-### 2.4 推論スクリプトの配置
-
-```bash
-# CosyVoiceリポジトリから推論スクリプトをコピー
-mkdir scripts
-cp /path/to/CosyVoice/scripts/onnx_inference_pure.py scripts/
-
-# プロンプト音声もコピー（オプション）
-mkdir -p asset/prompts
-cp /path/to/CosyVoice/asset/prompts/*.wav asset/prompts/
-```
-
 **最終的なディレクトリ構成:**
 ```
 cosyvoice-onnx/
-├── scripts/
-│   └── onnx_inference_pure.py
-├── asset/
-│   └── prompts/
-│       └── *.wav
 ├── pretrained_models/
 │   └── Fun-CosyVoice3-0.5B/
-│       └── (モデルファイル)
+│       ├── CosyVoice-BlankEN/      # トークナイザー
+│       └── onnx/                    # ONNXモデル
+│           ├── *.onnx               # モデルファイル
+│           ├── scripts/             # 推論スクリプト
+│           │   └── onnx_inference_pure.py
+│           └── prompts/             # サンプル音声
+│               └── *.wav
 ├── pyproject.toml
 └── uv.lock
 ```
@@ -113,32 +100,26 @@ cosyvoice-onnx/
 
 ### 3.1 ONNXモデルのダウンロード（Hugging Face）
 
+推論スクリプトとサンプルプロンプト音声も含まれています：
+
 ```bash
-uv run python -c "
-from huggingface_hub import snapshot_download
-snapshot_download('ayousanz/cosy-voice3-onnx',
-                  local_dir='pretrained_models/Fun-CosyVoice3-0.5B/onnx')
-"
+uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('ayousanz/cosy-voice3-onnx', local_dir='pretrained_models/Fun-CosyVoice3-0.5B/onnx')"
 ```
 
 **リポジトリ:** https://huggingface.co/ayousanz/cosy-voice3-onnx
+
+**含まれるファイル:**
+- ONNXモデル（14ファイル、約3.8GB）
+- `scripts/onnx_inference_pure.py` - 推論スクリプト
+- `prompts/en_female_nova_greeting.wav` - 女性サンプル音声
+- `prompts/en_male_onyx_greeting.wav` - 男性サンプル音声
 
 ### 3.2 トークナイザーのダウンロード（ModelScope）
 
 ONNXモデルに加えて、Qwen2トークナイザーが必要です：
 
 ```bash
-# トークナイザーファイルのみダウンロード（model.safetensorsは不要）
-uv run python -c "
-from modelscope import snapshot_download
-snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512',
-                  local_dir='pretrained_models/Fun-CosyVoice3-0.5B',
-                  allow_patterns=['CosyVoice-BlankEN/tokenizer*',
-                                  'CosyVoice-BlankEN/vocab*',
-                                  'CosyVoice-BlankEN/special_tokens*',
-                                  'CosyVoice-BlankEN/config*',
-                                  'CosyVoice-BlankEN/merges*'])
-"
+uv run python -c "from modelscope import snapshot_download; snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512', local_dir='pretrained_models/Fun-CosyVoice3-0.5B', allow_patterns=['CosyVoice-BlankEN/*'])"
 ```
 
 ### 3.3 ファイル配置の確認
@@ -174,9 +155,13 @@ pretrained_models/Fun-CosyVoice3-0.5B/
 ### 4.1 基本的な使い方
 
 ```bash
-uv run python scripts/onnx_inference_pure.py \
+# Windows PowerShell（1行で実行）
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|en|>Hello, this is a test." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --output output.wav
+
+# Linux/macOS
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py \
     --text "<|en|>Hello, this is a test." \
-    --prompt_wav asset/prompts/en_female_nova_greeting.wav \
+    --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav \
     --output output.wav
 ```
 
@@ -247,28 +232,22 @@ CosyVoiceは音声クローニングTTSシステムのため、**プロンプト
 ### 6.1 英語（女性ボイス）
 
 ```bash
-uv run python scripts/onnx_inference_pure.py \
-    --text "<|en|>Welcome to the future of voice synthesis." \
-    --prompt_wav asset/prompts/en_female_nova_greeting.wav \
-    --output english_female.wav
+# Windows PowerShell
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|en|>Welcome to the future of voice synthesis." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --output english_female.wav
 ```
 
 ### 6.2 英語（男性ボイス）
 
 ```bash
-uv run python scripts/onnx_inference_pure.py \
-    --text "<|en|>This is a demonstration of voice cloning technology." \
-    --prompt_wav asset/prompts/en_male_onyx_greeting.wav \
-    --output english_male.wav
+# Windows PowerShell
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|en|>This is a demonstration of voice cloning technology." --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_male_onyx_greeting.wav --output english_male.wav
 ```
 
 ### 6.3 日本語
 
 ```bash
-uv run python scripts/onnx_inference_pure.py \
-    --text "<|ja|>これは音声合成のテストです。" \
-    --prompt_wav asset/prompts/en_female_nova_greeting.wav \
-    --output japanese.wav
+# Windows PowerShell
+uv run python pretrained_models/Fun-CosyVoice3-0.5B/onnx/scripts/onnx_inference_pure.py --text "<|ja|>これは音声合成のテストです。" --prompt_wav pretrained_models/Fun-CosyVoice3-0.5B/onnx/prompts/en_female_nova_greeting.wav --output japanese.wav
 ```
 
 ---
