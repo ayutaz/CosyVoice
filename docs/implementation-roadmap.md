@@ -14,9 +14,9 @@
 
 ### 1.1 環境セットアップ
 
-- [ ] Python環境でのONNXエクスポート依存関係インストール
+- [ ] Python環境でのONNXエクスポート依存関係インストール（uv使用）
   ```bash
-  pip install onnx onnxruntime onnxruntime-gpu optimum transformers
+  uv add onnx onnxruntime onnxruntime-gpu optimum transformers
   ```
 - [ ] Unity 6プロジェクト作成
 - [ ] Unity Sentis (com.unity.ai.inference) パッケージインストール
