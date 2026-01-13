@@ -483,56 +483,101 @@ class PureOnnxCosyVoice3:
             print(f"    Extracted generated portion: mel shape {mel.shape}")
         return mel
 
-    def _stft(self, x: np.ndarray, n_fft: int = 16, hop_len: int = 4) -> tuple:
-        """Compute STFT using torch (for exact PyTorch HiFT compatibility)"""
-        import torch
+    def _stft(self, x: np.ndarray, n_fft: int = 16, hop_len: int = 4, center: bool = True) -> tuple:
+        """Compute STFT using numpy (PyTorch-compatible implementation)
+
+        This implements the same STFT as PyTorch's torch.stft with:
+        - n_fft=16, hop_length=4, win_length=16
+        - Hann window
+        - center=True (default): pads signal by n_fft//2 on each side
+        """
         from scipy.signal import get_window
 
         # Create Hann window matching PyTorch HiFT
-        window = torch.from_numpy(get_window("hann", n_fft, fftbins=True).astype(np.float32))
+        window = get_window("hann", n_fft, fftbins=True).astype(np.float32)
 
-        # Convert signal to tensor
-        x_t = torch.from_numpy(x.astype(np.float32))
-        if x_t.dim() == 1:
-            x_t = x_t.unsqueeze(0)
+        x = x.astype(np.float32)
 
-        # Compute STFT (same as HiFT._stft)
-        spec = torch.stft(x_t, n_fft, hop_len, n_fft, window=window, return_complex=True)
-        spec = torch.view_as_real(spec)  # [B, F, T, 2]
+        # Apply centering (same as PyTorch default)
+        if center:
+            pad_len = n_fft // 2
+            x = np.pad(x, (pad_len, pad_len), mode='reflect')
 
-        # Return real and imaginary parts
-        real = spec[..., 0].numpy()
-        imag = spec[..., 1].numpy()
+        # Calculate number of frames
+        n_frames = 1 + (len(x) - n_fft) // hop_len
 
-        return real.squeeze(0), imag.squeeze(0)
+        # Allocate output arrays
+        n_freqs = n_fft // 2 + 1  # 9 for n_fft=16
+        real = np.zeros((n_freqs, n_frames), dtype=np.float32)
+        imag = np.zeros((n_freqs, n_frames), dtype=np.float32)
+
+        # Compute STFT frame by frame
+        for i in range(n_frames):
+            start = i * hop_len
+            frame = x[start:start + n_fft] * window
+
+            # FFT
+            spectrum = np.fft.rfft(frame)
+            real[:, i] = np.real(spectrum)
+            imag[:, i] = np.imag(spectrum)
+
+        return real, imag
 
     def _istft(self, magnitude: np.ndarray, phase: np.ndarray, n_fft: int = 16, hop_len: int = 4) -> np.ndarray:
-        """Compute ISTFT from magnitude and phase using torch (for exact PyTorch compatibility)"""
-        import torch
+        """Compute ISTFT from magnitude and phase using scipy (PyTorch-free implementation)
+
+        This implements the same ISTFT as PyTorch's torch.istft with:
+        - n_fft=16, hop_length=4, win_length=16
+        - Hann window
+        - Proper overlap-add normalization
+        """
         from scipy.signal import get_window
 
         # Create Hann window matching PyTorch HiFT
-        window = torch.from_numpy(get_window("hann", n_fft, fftbins=True).astype(np.float32))
+        window = get_window("hann", n_fft, fftbins=True).astype(np.float32)
 
         # Clip magnitude to prevent numerical issues (same as HiFT._istft)
         magnitude = np.clip(magnitude, a_min=None, a_max=100.0)
 
         # Reconstruct complex STFT from magnitude and phase
-        real = magnitude * np.cos(phase)
-        imag = magnitude * np.sin(phase)
+        complex_spec = magnitude * np.exp(1j * phase)
 
-        # Convert to torch tensors
-        real_t = torch.from_numpy(real.astype(np.float32))
-        imag_t = torch.from_numpy(imag.astype(np.float32))
-        complex_spec = torch.complex(real_t, imag_t)
+        n_frames = complex_spec.shape[1]
 
-        # Compute ISTFT (same as HiFT._istft)
-        audio = torch.istft(complex_spec, n_fft, hop_len, n_fft, window=window)
+        # Calculate output length
+        output_length = n_fft + (n_frames - 1) * hop_len
 
-        return audio.numpy()
+        # Allocate output arrays
+        audio = np.zeros(output_length, dtype=np.float32)
+        window_sum = np.zeros(output_length, dtype=np.float32)
+
+        # Overlap-add reconstruction
+        for i in range(n_frames):
+            start = i * hop_len
+
+            # Inverse FFT
+            frame_spec = complex_spec[:, i]
+            frame = np.fft.irfft(frame_spec, n=n_fft).astype(np.float32)
+
+            # Apply window and add to output
+            audio[start:start + n_fft] += frame * window
+            window_sum[start:start + n_fft] += window ** 2
+
+        # Normalize by window sum (avoid division by zero)
+        window_sum = np.maximum(window_sum, 1e-8)
+        audio = audio / window_sum
+
+        return audio.astype(np.float32)
 
     def hift_inference(self, mel: np.ndarray) -> np.ndarray:
-        """Convert mel to audio using pure ONNX HiFT"""
+        """Convert mel to audio using pure ONNX HiFT
+
+        HiFT CosyVoice3 uses:
+        - mel hop_length = 480 (mel spectrogram)
+        - n_fft = 16, hop_length = 4 for internal STFT
+        - upsample_rates = [8, 5, 3] (total 120x)
+        - Expected STFT frames = mel_frames * 120
+        """
 
         # Predict F0
         f0 = self.hift_f0_predictor.run(None, {'mel': mel.astype(np.float32)})[0]
@@ -545,14 +590,16 @@ class PureOnnxCosyVoice3:
         print(f"    Source shape: {source.shape}")
 
         # Compute STFT of source signal
-        # HiFT uses n_fft=16, hop_len=4
+        # HiFT CosyVoice3 uses n_fft=16, hop_len=4, center=True
+        # With centering, expected STFT frames = mel_frames * 120 + 1
         source_squeezed = source.squeeze()  # [time]
+
         try:
-            stft_real, stft_imag = self._stft(source_squeezed, n_fft=16, hop_len=4)
+            stft_real, stft_imag = self._stft(source_squeezed, n_fft=16, hop_len=4, center=True)
             # Combine real and imaginary: [batch, 18, time] (9 real + 9 imaginary)
             source_stft = np.concatenate([stft_real, stft_imag], axis=0)
             source_stft = source_stft[np.newaxis, :, :]  # Add batch dim
-            print(f"    Source STFT shape: {source_stft.shape}")
+            print(f"    Source STFT shape: {source_stft.shape} (expected: mel_frames*120 = {mel.shape[2]*120})")
 
             # Decode mel + source_stft to magnitude and phase
             outputs = self.hift_decoder.run(None, {
@@ -564,6 +611,7 @@ class PureOnnxCosyVoice3:
             print(f"    Magnitude shape: {magnitude.shape}, Phase shape: {phase.shape}")
 
             # Apply ISTFT to convert magnitude and phase to audio
+            # Use same n_fft=16, hop_len=4 as STFT
             audio = self._istft(magnitude.squeeze(0), phase.squeeze(0), n_fft=16, hop_len=4)
 
             # Apply audio clipping (same as HiFT: audio_limit=0.99)
