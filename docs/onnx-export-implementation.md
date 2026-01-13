@@ -375,6 +375,37 @@ python scripts/onnx_inference_pure.py \
 - フォーマット: WAV（librosa経由で他形式も対応）
 - 品質: 明瞭な音声、背景ノイズ最小限
 
+### 6.6 テスト用プロンプト音声
+
+`asset/prompts/` に英語のテスト用プロンプト音声が用意されている：
+
+| ボイス | 性別 | ファイル例 |
+|-------|------|-----------|
+| Nova | 女性 | `en_female_nova_greeting.wav` |
+| Shimmer | 女性 | `en_female_shimmer_greeting.wav` |
+| Alloy | 女性 | `en_female_alloy_greeting.wav` |
+| Echo | 男性 | `en_male_echo_greeting.wav` |
+| Fable | 男性 | `en_male_fable_greeting.wav` |
+| Onyx | 男性 | `en_male_onyx_greeting.wav` |
+
+各ボイスに3種類のテキスト（greeting, story, technical）がある。
+詳細は `asset/prompts/README.md` を参照。
+
+### 6.7 Flow出力の処理
+
+Flowモデルはプロンプト部分と生成部分を含むメルスペクトログラムを出力する：
+
+```
+[prompt_mel (mel_len1)] + [generated_mel (mel_len2)] = total_mel
+```
+
+生成音声のみを出力するため、プロンプト部分を除去：
+
+```python
+# Flow出力からプロンプト部分を除去
+mel = mel[:, :, mel_len1:]  # generated部分のみ抽出
+```
+
 ---
 
 ## 7. 推論パフォーマンス
@@ -416,6 +447,10 @@ python scripts/onnx_inference_pure.py \
 - `hift_f0_predictor_fp32.onnx`
 - `hift_source_generator_fp32.onnx`
 - `hift_decoder_fp32.onnx`
+
+プロンプト音声処理用（必須）:
+- `campplus.onnx` - 話者埋め込み抽出（モデルディレクトリ直下）
+- `speech_tokenizer_v3.onnx` - 音声トークン抽出（モデルディレクトリ直下）
 
 ### 8.2 C#で実装が必要な部分
 
