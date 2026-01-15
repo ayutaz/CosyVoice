@@ -73,10 +73,18 @@ class PureOnnxCosyVoice3:
         print("Loading tokenizer...")
         from transformers import AutoTokenizer
 
+        # Try multiple paths for tokenizer files
         qwen_path = os.path.join(self.model_dir, 'CosyVoice-BlankEN')
+        onnx_tokenizer_path = self.onnx_dir  # Tokenizer files in ONNX directory
+
         if os.path.exists(qwen_path):
+            print(f"  Loading from {qwen_path}")
             self.tokenizer = AutoTokenizer.from_pretrained(qwen_path, trust_remote_code=True)
+        elif os.path.exists(os.path.join(onnx_tokenizer_path, 'vocab.json')):
+            print(f"  Loading from {onnx_tokenizer_path}")
+            self.tokenizer = AutoTokenizer.from_pretrained(onnx_tokenizer_path, trust_remote_code=True)
         else:
+            print("  Loading from Qwen/Qwen2-0.5B")
             self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B", trust_remote_code=True)
         print("  Tokenizer loaded!")
 

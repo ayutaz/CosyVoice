@@ -44,7 +44,7 @@ uv init cosyvoice-onnx --python 3.10
 cd cosyvoice-onnx
 
 # 必要なパッケージのインストール（バージョン指定重要）
-uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.2" "transformers==4.51.3" "scipy==1.13.1" "modelscope==1.20.0" "huggingface_hub>=0.30.0"
+uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.2" "transformers==4.51.3" "scipy==1.13.1" "huggingface_hub>=0.30.0"
 ```
 
 **注意**: `--python 3.10`フラグは必須です。onnxruntime 1.18.0はPython 3.8〜3.12のみサポートしています。
@@ -65,8 +65,7 @@ uv add "onnxruntime==1.18.0" "numpy==1.26.4" "soundfile==0.12.1" "librosa==0.10.
 | `librosa` | 0.10.2 | 音声読み込み、メルスペクトログラム抽出 |
 | `transformers` | 4.51.3 | Qwen2トークナイザー |
 | `scipy` | 1.13.1 | 信号処理（zoom等） |
-| `modelscope` | 1.20.0 | モデルダウンロード |
-| `huggingface_hub` | >=0.30.0 | Hugging Faceからのダウンロード（transformers依存） |
+| `huggingface_hub` | >=0.30.0 | Hugging Faceからのダウンロード |
 
 **GPU使用時（オプション）:**
 ```bash
@@ -79,9 +78,11 @@ uv remove onnxruntime && uv add "onnxruntime-gpu==1.18.0"
 cosyvoice-onnx/
 ├── pretrained_models/
 │   └── Fun-CosyVoice3-0.5B/
-│       ├── CosyVoice-BlankEN/      # トークナイザー
-│       └── onnx/                    # ONNXモデル
-│           ├── *.onnx               # モデルファイル
+│       └── onnx/                    # ONNXモデル + トークナイザー
+│           ├── *.onnx               # モデルファイル（14ファイル）
+│           ├── vocab.json           # トークナイザー語彙
+│           ├── merges.txt           # トークナイザーマージ
+│           ├── tokenizer_config.json # トークナイザー設定
 │           ├── scripts/             # 推論スクリプト
 │           │   └── onnx_inference_pure.py
 │           └── prompts/             # サンプル音声
@@ -94,9 +95,9 @@ cosyvoice-onnx/
 
 ## 3. モデルのダウンロード
 
-### 3.1 ONNXモデルのダウンロード（Hugging Face）
+### 3.1 全ファイルのダウンロード（Hugging Face）
 
-推論スクリプトとサンプルプロンプト音声も含まれています：
+ONNXモデル、トークナイザー、推論スクリプト、サンプル音声がすべて含まれています：
 
 ```bash
 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('ayousanz/cosy-voice3-onnx', local_dir='pretrained_models/Fun-CosyVoice3-0.5B/onnx')"
@@ -106,31 +107,26 @@ uv run python -c "from huggingface_hub import snapshot_download; snapshot_downlo
 
 **含まれるファイル:**
 - ONNXモデル（14ファイル、約3.8GB）
+- トークナイザーファイル（`vocab.json`, `merges.txt`, `tokenizer_config.json`）
 - `scripts/onnx_inference_pure.py` - 推論スクリプト
 - `prompts/en_female_nova_greeting.wav` - 女性サンプル音声
 - `prompts/en_male_onyx_greeting.wav` - 男性サンプル音声
 
-### 3.2 トークナイザーのダウンロード（ModelScope）
+**注意**: トークナイザーファイルも含まれているため、追加のダウンロードは不要です。
 
-ONNXモデルに加えて、Qwen2トークナイザーが必要です：
-
-```bash
-uv run python -c "from modelscope import snapshot_download; snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512', local_dir='pretrained_models/Fun-CosyVoice3-0.5B', allow_patterns=['CosyVoice-BlankEN/*.json', 'CosyVoice-BlankEN/*.txt'])"
-```
-
-### 3.3 ファイル配置の確認
+### 3.2 ファイル配置の確認
 
 ダウンロード後、以下の構成になっていることを確認：
 
 ```
 pretrained_models/Fun-CosyVoice3-0.5B/
-├── CosyVoice-BlankEN/           # Qwen2トークナイザー（ModelScopeから）
-│   ├── tokenizer.json
-│   └── ...
-└── onnx/                        # ONNXモデル（Hugging Faceから）
-    ├── campplus.onnx            # 28MB - 話者埋め込み抽出
-    ├── speech_tokenizer_v3.onnx # 969MB - 音声トークン化
-    ├── text_embedding_fp32.onnx # 544MB - テキスト埋め込み
+└── onnx/                               # ONNXモデル + トークナイザー
+    ├── vocab.json                      # トークナイザー語彙
+    ├── merges.txt                      # トークナイザーマージ
+    ├── tokenizer_config.json           # トークナイザー設定
+    ├── campplus.onnx                   # 28MB - 話者埋め込み抽出
+    ├── speech_tokenizer_v3.onnx        # 969MB - 音声トークン化
+    ├── text_embedding_fp32.onnx        # 544MB - テキスト埋め込み
     ├── llm_backbone_initial_fp16.onnx  # 717MB - LLM初回パス
     ├── llm_backbone_decode_fp16.onnx   # 717MB - LLMデコードステップ
     ├── llm_decoder_fp16.onnx           # 12MB  - logits出力
@@ -141,7 +137,11 @@ pretrained_models/Fun-CosyVoice3-0.5B/
     ├── flow.decoder.estimator.fp16.onnx  # 664MB - Flow DiT
     ├── hift_f0_predictor_fp32.onnx     # 13MB  - F0予測
     ├── hift_source_generator_fp32.onnx # 259MB - ソース生成
-    └── hift_decoder_fp32.onnx          # 70MB  - HiFTデコーダー
+    ├── hift_decoder_fp32.onnx          # 70MB  - HiFTデコーダー
+    ├── scripts/
+    │   └── onnx_inference_pure.py      # 推論スクリプト
+    └── prompts/
+        └── *.wav                       # サンプル音声
 ```
 
 ---
