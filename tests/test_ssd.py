@@ -6,9 +6,9 @@
 #
 #   http://www.apache.org/licenses/LICENSE-2.0
 
-import pytest
+from unittest.mock import MagicMock
+
 import torch
-from unittest.mock import MagicMock, patch
 from transformers import Qwen2Config
 from transformers.cache_utils import DynamicCache
 
@@ -22,10 +22,10 @@ from cosyvoice.llm.speculative_decoding import (
     truncate_cache,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_small_config():
     """Create a small Qwen2Config for fast tests."""
@@ -56,6 +56,7 @@ def make_dynamic_cache(num_layers=8, batch=1, num_heads=2, seq_len=10, head_dim=
 # 1. KV Cache Truncation
 # ---------------------------------------------------------------------------
 
+
 class TestTruncateCache:
     def test_truncate_removes_last_n(self):
         cache = make_dynamic_cache(num_layers=4, seq_len=10)
@@ -84,13 +85,14 @@ class TestTruncateCache:
 # 2. Causal Mask
 # ---------------------------------------------------------------------------
 
+
 class TestBuildCausalMask:
     def test_shape(self):
-        mask = build_causal_mask(5, torch.device('cpu'))
+        mask = build_causal_mask(5, torch.device("cpu"))
         assert mask.shape == (1, 5, 5)
 
     def test_is_lower_triangular(self):
-        mask = build_causal_mask(4, torch.device('cpu'))
+        mask = build_causal_mask(4, torch.device("cpu"))
         expected = torch.tril(torch.ones(1, 4, 4, dtype=torch.bool))
         assert torch.equal(mask, expected)
 
@@ -98,6 +100,7 @@ class TestBuildCausalMask:
 # ---------------------------------------------------------------------------
 # 3. Draft Model Construction
 # ---------------------------------------------------------------------------
+
 
 class TestDraftQwen2Encoder:
     def test_construction(self):
@@ -112,7 +115,7 @@ class TestDraftQwen2Encoder:
         draft.eval()
         batch, seq_len, hidden = 1, 5, config.hidden_size
         xs = torch.randn(batch, seq_len, hidden)
-        masks = build_causal_mask(seq_len, torch.device('cpu'))
+        masks = build_causal_mask(seq_len, torch.device("cpu"))
         with torch.no_grad():
             out, cache = draft.forward_one_step(xs, masks, cache=None)
         assert out.shape == (batch, seq_len, hidden)
@@ -125,12 +128,12 @@ class TestDraftQwen2Encoder:
         hidden = config.hidden_size
         # First step: full sequence
         xs1 = torch.randn(1, 3, hidden)
-        mask1 = build_causal_mask(3, torch.device('cpu'))
+        mask1 = build_causal_mask(3, torch.device("cpu"))
         with torch.no_grad():
             out1, cache1 = draft.forward_one_step(xs1, mask1, cache=None)
         # Second step: single token with cache
         xs2 = torch.randn(1, 1, hidden)
-        mask2 = build_causal_mask(4, torch.device('cpu'))  # 3 cached + 1 new
+        mask2 = build_causal_mask(4, torch.device("cpu"))  # 3 cached + 1 new
         with torch.no_grad():
             out2, cache2 = draft.forward_one_step(xs2, mask2, cache=cache1)
         assert out2.shape == (1, 1, hidden)
@@ -140,43 +143,44 @@ class TestDraftQwen2Encoder:
 # 4. Weight Extraction / Layer Remapping
 # ---------------------------------------------------------------------------
 
+
 class TestExtractDraftWeights:
     def test_layer_remapping(self):
         # Build a fake state dict with 24 layers
         target_sd = {}
         for i in range(24):
-            target_sd['llm.model.model.layers.{}.self_attn.q_proj.weight'.format(i)] = torch.randn(64, 64)
-        target_sd['llm.model.model.embed_tokens.weight'] = torch.randn(256, 64)
-        target_sd['llm.model.model.norm.weight'] = torch.randn(64)
-        target_sd['llm_decoder.weight'] = torch.randn(100, 64)
-        target_sd['speech_embedding.weight'] = torch.randn(100, 64)
+            target_sd["llm.model.model.layers.{}.self_attn.q_proj.weight".format(i)] = torch.randn(64, 64)
+        target_sd["llm.model.model.embed_tokens.weight"] = torch.randn(256, 64)
+        target_sd["llm.model.model.norm.weight"] = torch.randn(64)
+        target_sd["llm_decoder.weight"] = torch.randn(100, 64)
+        target_sd["speech_embedding.weight"] = torch.randn(100, 64)
 
         draft_sd = extract_draft_state_dict(target_sd)
 
         # Check only 8 layers present
         draft_layers = set()
         for key in draft_sd:
-            if 'llm.model.model.layers.' in key:
-                parts = key.split('.')
-                idx = int(parts[parts.index('layers') + 1])
+            if "llm.model.model.layers." in key:
+                parts = key.split(".")
+                idx = int(parts[parts.index("layers") + 1])
                 draft_layers.add(idx)
         assert draft_layers == set(range(DRAFT_NUM_LAYERS))
 
         # Check non-layer keys are preserved
-        assert 'llm.model.model.embed_tokens.weight' in draft_sd
-        assert 'llm.model.model.norm.weight' in draft_sd
-        assert 'llm_decoder.weight' in draft_sd
-        assert 'speech_embedding.weight' in draft_sd
+        assert "llm.model.model.embed_tokens.weight" in draft_sd
+        assert "llm.model.model.norm.weight" in draft_sd
+        assert "llm_decoder.weight" in draft_sd
+        assert "speech_embedding.weight" in draft_sd
 
     def test_correct_layer_mapping(self):
         target_sd = {}
         for i in range(24):
-            target_sd['llm.model.model.layers.{}.w'.format(i)] = torch.tensor([float(i)])
+            target_sd["llm.model.model.layers.{}.w".format(i)] = torch.tensor([float(i)])
 
         draft_sd = extract_draft_state_dict(target_sd)
 
         for dst_idx, src_idx in enumerate(DRAFT_LAYER_INDICES):
-            key = 'llm.model.model.layers.{}.w'.format(dst_idx)
+            key = "llm.model.model.layers.{}.w".format(dst_idx)
             assert key in draft_sd
             assert draft_sd[key].item() == float(src_idx)
 
@@ -184,6 +188,7 @@ class TestExtractDraftWeights:
 # ---------------------------------------------------------------------------
 # 5. Acceptance Criterion
 # ---------------------------------------------------------------------------
+
 
 class TestAcceptanceCriterion:
     def test_always_accept_with_high_beta(self):
@@ -213,6 +218,7 @@ class TestAcceptanceCriterion:
 # 6. Rejection Resampling
 # ---------------------------------------------------------------------------
 
+
 class TestRejectionResampling:
     def test_max_zero_q_minus_p_is_valid_distribution(self):
         """normalize(max(0, q - p)) should be a valid probability distribution."""
@@ -238,6 +244,7 @@ class TestRejectionResampling:
 # ---------------------------------------------------------------------------
 # 7. EOS Handling
 # ---------------------------------------------------------------------------
+
 
 class TestEOSHandling:
     def test_eos_ignored_before_min_len(self):
@@ -288,6 +295,7 @@ class TestEOSHandling:
 # 8. SSD Decode with Mocks (full accept scenario)
 # ---------------------------------------------------------------------------
 
+
 class TestSSDDecodeMock:
     def _make_mock_decoder(self, vocab_size=20, hidden_size=64, stop_ids=None):
         """Build a SpeculativeDecoder with mock target/draft that always produce valid tokens."""
@@ -311,6 +319,7 @@ class TestSSDDecodeMock:
                     v = torch.randn(1, 2, seq_len, hidden_size // 2)
                     cache.update(k, v, layer_idx)
                 return xs, cache
+
             return forward_one_step
 
         target_llm = MagicMock()
@@ -370,6 +379,7 @@ class TestSSDDecodeMock:
                     v = torch.randn(1, 2, seq_len, hidden_size // 2)
                     cache.update(k, v, layer_idx)
                 return xs, cache
+
             return forward_one_step
 
         target_llm = MagicMock()
@@ -405,13 +415,14 @@ class TestSSDDecodeMock:
 # 9. Cache Sync After Full Accept
 # ---------------------------------------------------------------------------
 
+
 class TestCacheSyncAfterFullAccept:
     def test_draft_cache_sync(self):
         """When all draft tokens are accepted, draft cache should be synced
         by running the last accepted draft token through draft."""
         num_draft_layers = 8
         cache = make_dynamic_cache(num_layers=num_draft_layers, seq_len=5)
-        original_len = cache.key_cache[0].shape[2]
+        assert cache.key_cache[0].shape[2] == 5
 
         # Simulate: all 3 draft tokens accepted, draft_remove = 3 - 3 - 1 = -1
         # This means we need to run one more step through draft

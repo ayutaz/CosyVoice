@@ -21,7 +21,9 @@ Usage:
 """
 
 import argparse
+
 import torch
+
 from cosyvoice.llm.speculative_decoding import DRAFT_LAYER_INDICES
 
 
@@ -35,45 +37,45 @@ def extract_draft_weights(target_sd):
     layer_map = {src: dst for dst, src in enumerate(DRAFT_LAYER_INDICES)}
 
     for key, value in target_sd.items():
-        if 'llm.model.model.layers.' in key:
-            parts = key.split('.')
-            layer_idx_pos = parts.index('layers') + 1
+        if "llm.model.model.layers." in key:
+            parts = key.split(".")
+            layer_idx_pos = parts.index("layers") + 1
             src_layer = int(parts[layer_idx_pos])
             if src_layer in layer_map:
                 parts[layer_idx_pos] = str(layer_map[src_layer])
-                new_key = '.'.join(parts)
+                new_key = ".".join(parts)
                 draft_sd[new_key] = value
-        elif 'llm.model.' in key:
+        elif "llm.model." in key:
             draft_sd[key] = value
-        elif key.startswith('llm_decoder.') or key.startswith('speech_embedding.'):
+        elif key.startswith("llm_decoder.") or key.startswith("speech_embedding."):
             draft_sd[key] = value
 
     return draft_sd
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Extract draft model weights from CosyVoice3 target model')
-    parser.add_argument('--target_model', required=True, help='Path to target llm.pt')
-    parser.add_argument('--output_path', required=True, help='Output path for llm_draft.pt')
+    parser = argparse.ArgumentParser(description="Extract draft model weights from CosyVoice3 target model")
+    parser.add_argument("--target_model", required=True, help="Path to target llm.pt")
+    parser.add_argument("--output_path", required=True, help="Output path for llm_draft.pt")
     args = parser.parse_args()
 
-    print('Loading target model from {}...'.format(args.target_model))
-    target_sd = torch.load(args.target_model, map_location='cpu', weights_only=True)
+    print("Loading target model from {}...".format(args.target_model))
+    target_sd = torch.load(args.target_model, map_location="cpu", weights_only=True)
 
-    print('Extracting draft weights...')
-    print('  Layer mapping: target {} -> draft [0..{}]'.format(DRAFT_LAYER_INDICES, len(DRAFT_LAYER_INDICES) - 1))
+    print("Extracting draft weights...")
+    print("  Layer mapping: target {} -> draft [0..{}]".format(DRAFT_LAYER_INDICES, len(DRAFT_LAYER_INDICES) - 1))
     draft_sd = extract_draft_weights(target_sd)
 
-    target_layer_keys = [k for k in target_sd if 'llm.model.model.layers.' in k]
-    draft_layer_keys = [k for k in draft_sd if 'llm.model.model.layers.' in k]
-    print('  Target layer params: {}'.format(len(target_layer_keys)))
-    print('  Draft layer params: {}'.format(len(draft_layer_keys)))
-    print('  Total draft params: {}'.format(len(draft_sd)))
+    target_layer_keys = [k for k in target_sd if "llm.model.model.layers." in k]
+    draft_layer_keys = [k for k in draft_sd if "llm.model.model.layers." in k]
+    print("  Target layer params: {}".format(len(target_layer_keys)))
+    print("  Draft layer params: {}".format(len(draft_layer_keys)))
+    print("  Total draft params: {}".format(len(draft_sd)))
 
-    print('Saving draft model to {}...'.format(args.output_path))
+    print("Saving draft model to {}...".format(args.output_path))
     torch.save(draft_sd, args.output_path)
-    print('Done.')
+    print("Done.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

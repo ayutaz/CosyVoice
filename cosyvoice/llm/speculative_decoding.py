@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import torch
-import torch.nn.functional as F
-from transformers import Qwen2ForCausalLM, Qwen2Config
+from transformers import Qwen2Config, Qwen2ForCausalLM
+
 from cosyvoice.utils.file_utils import logging
 
 # Layer indices from 24-layer target to extract for 8-layer draft (paper: lower 2 + upper 6)
@@ -81,18 +81,18 @@ def extract_draft_state_dict(target_state_dict):
     layer_map = {src: dst for dst, src in enumerate(DRAFT_LAYER_INDICES)}
 
     for key, value in target_state_dict.items():
-        if 'llm.model.model.layers.' in key:
-            parts = key.split('.')
-            layer_idx_pos = parts.index('layers') + 1
+        if "llm.model.model.layers." in key:
+            parts = key.split(".")
+            layer_idx_pos = parts.index("layers") + 1
             src_layer = int(parts[layer_idx_pos])
             if src_layer in layer_map:
                 parts[layer_idx_pos] = str(layer_map[src_layer])
-                new_key = '.'.join(parts)
+                new_key = ".".join(parts)
                 draft_sd[new_key] = value
-        elif 'llm.model.' in key:
+        elif "llm.model." in key:
             # embed_tokens, norm, lm_head etc.
             draft_sd[key] = value
-        elif key.startswith('llm_decoder.') or key.startswith('speech_embedding.'):
+        elif key.startswith("llm_decoder.") or key.startswith("speech_embedding."):
             draft_sd[key] = value
     return draft_sd
 
@@ -141,7 +141,7 @@ class SpeculativeDecoder:
                 break
             num_trials += 1
             if num_trials > max_trials:
-                raise RuntimeError('sampling reached max_trials with eos when ignore_eos=True')
+                raise RuntimeError("sampling reached max_trials with eos when ignore_eos=True")
         return top_ids
 
     @torch.inference_mode()
@@ -272,6 +272,8 @@ class SpeculativeDecoder:
                         out_tokens.append(x_j)
                         total_generated += 1
                         n_accepted += 1
+                        if total_generated >= max_len:
+                            break
                 else:
                     # Reject: sample from normalized max(0, q - p)
                     diff = torch.clamp(q_j - p_j, min=0)
@@ -312,15 +314,18 @@ class SpeculativeDecoder:
                     break
             else:
                 # All Ld draft tokens accepted -> bonus token from target
-                bonus_logits = target_probs[Ld]  # (1, vocab)
-                bonus_logp = bonus_logits.log()
-                ignore_eos = total_generated < min_len
-                bonus_token = self._sample_token(self.llm_decoder(y_t[:, -1]), out_tokens, sampling, ignore_eos=ignore_eos)
-                if bonus_token in self.stop_token_ids:
-                    return
-                yield bonus_token
-                out_tokens.append(bonus_token)
-                total_generated += 1
+                if total_generated >= max_len:
+                    n_accepted = Ld
+                else:
+                    ignore_eos = total_generated < min_len
+                    bonus_token = self._sample_token(
+                        self.llm_decoder(y_t[:, -1]), out_tokens, sampling, ignore_eos=ignore_eos
+                    )
+                    if bonus_token in self.stop_token_ids:
+                        return
+                    yield bonus_token
+                    out_tokens.append(bonus_token)
+                    total_generated += 1
                 n_accepted = Ld
 
             # --- D. KV cache correction ---
@@ -344,4 +349,4 @@ class SpeculativeDecoder:
             last_accepted = out_tokens[-1]
             current_emb = self.speech_embedding.weight[last_accepted].reshape(1, 1, -1)
 
-        logging.info('SSD decode reached max_len {}'.format(max_len))
+        logging.info("SSD decode reached max_len {}".format(max_len))

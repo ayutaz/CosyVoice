@@ -37,7 +37,8 @@ from __future__ import print_function
 import argparse
 import datetime
 import logging
-logging.getLogger('matplotlib').setLevel(logging.WARNING)
+
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
 from copy import deepcopy
 import os
 import torch
@@ -47,14 +48,16 @@ import deepspeed
 from hyperpyyaml import load_hyperpyyaml
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from cosyvoice.llm.speculative_decoding import DRAFT_LAYER_INDICES
 from cosyvoice.utils.executor import Executor
 from cosyvoice.utils.train_utils import (
     init_distributed,
     init_dataset_and_dataloader,
     init_optimizer_and_scheduler,
-    init_summarywriter, save_model,
-    wrap_cuda_model, check_modify_and_save_config)
+    init_summarywriter,
+    save_model,
+    wrap_cuda_model,
+    check_modify_and_save_config,
+)
 
 
 def freeze_draft_model(model):
@@ -79,57 +82,40 @@ def freeze_draft_model(model):
     # Log parameter counts
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info('Draft model: {}/{} params trainable ({:.1f}%)'.format(
-        trainable, total, 100 * trainable / total))
+    logging.info("Draft model: {}/{} params trainable ({:.1f}%)".format(trainable, total, 100 * trainable / total))
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train draft model for SSD')
-    parser.add_argument('--train_engine',
-                        default='torch_ddp',
-                        choices=['torch_ddp', 'deepspeed'],
-                        help='Engine for paralleled training')
-    parser.add_argument('--model', required=True, help='model which will be trained')
-    parser.add_argument('--config', required=True, help='config file')
-    parser.add_argument('--train_data', required=True, help='train data file')
-    parser.add_argument('--cv_data', required=True, help='cv data file')
-    parser.add_argument('--qwen_pretrain_path', required=False, help='qwen pretrain path')
-    parser.add_argument('--onnx_path', required=False, help='onnx path')
-    parser.add_argument('--checkpoint', help='checkpoint model (llm_draft.pt)')
-    parser.add_argument('--model_dir', required=True, help='save model dir')
-    parser.add_argument('--tensorboard_dir',
-                        default='tensorboard',
-                        help='tensorboard log dir')
-    parser.add_argument('--ddp.dist_backend',
-                        dest='dist_backend',
-                        default='nccl',
-                        choices=['nccl', 'gloo'],
-                        help='distributed backend')
-    parser.add_argument('--num_workers',
-                        default=0,
-                        type=int,
-                        help='num of subprocess workers for reading')
-    parser.add_argument('--prefetch',
-                        default=100,
-                        type=int,
-                        help='prefetch number')
-    parser.add_argument('--pin_memory',
-                        action='store_true',
-                        default=False,
-                        help='Use pinned memory buffers used for reading')
-    parser.add_argument('--use_amp',
-                        action='store_true',
-                        default=False,
-                        help='Use automatic mixed precision training')
-    parser.add_argument('--deepspeed.save_states',
-                        dest='save_states',
-                        default='model_only',
-                        choices=['model_only', 'model+optimizer'],
-                        help='save model/optimizer states')
-    parser.add_argument('--timeout',
-                        default=60,
-                        type=int,
-                        help='timeout (in seconds) of cosyvoice_join.')
+    parser = argparse.ArgumentParser(description="Train draft model for SSD")
+    parser.add_argument(
+        "--train_engine", default="torch_ddp", choices=["torch_ddp", "deepspeed"], help="Engine for paralleled training"
+    )
+    parser.add_argument("--model", required=True, help="model which will be trained")
+    parser.add_argument("--config", required=True, help="config file")
+    parser.add_argument("--train_data", required=True, help="train data file")
+    parser.add_argument("--cv_data", required=True, help="cv data file")
+    parser.add_argument("--qwen_pretrain_path", required=False, help="qwen pretrain path")
+    parser.add_argument("--onnx_path", required=False, help="onnx path")
+    parser.add_argument("--checkpoint", help="checkpoint model (llm_draft.pt)")
+    parser.add_argument("--model_dir", required=True, help="save model dir")
+    parser.add_argument("--tensorboard_dir", default="tensorboard", help="tensorboard log dir")
+    parser.add_argument(
+        "--ddp.dist_backend", dest="dist_backend", default="nccl", choices=["nccl", "gloo"], help="distributed backend"
+    )
+    parser.add_argument("--num_workers", default=0, type=int, help="num of subprocess workers for reading")
+    parser.add_argument("--prefetch", default=100, type=int, help="prefetch number")
+    parser.add_argument(
+        "--pin_memory", action="store_true", default=False, help="Use pinned memory buffers used for reading"
+    )
+    parser.add_argument("--use_amp", action="store_true", default=False, help="Use automatic mixed precision training")
+    parser.add_argument(
+        "--deepspeed.save_states",
+        dest="save_states",
+        default="model_only",
+        choices=["model_only", "model+optimizer"],
+        help="save model/optimizer states",
+    )
+    parser.add_argument("--timeout", default=60, type=int, help="timeout (in seconds) of cosyvoice_join.")
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
     return args
@@ -138,23 +124,23 @@ def get_args():
 @record
 def main():
     args = get_args()
-    os.environ['onnx_path'] = args.onnx_path if args.onnx_path else ''
-    logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)s %(message)s')
+    os.environ["onnx_path"] = args.onnx_path if args.onnx_path else ""
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
-    override_dict = {k: None for k in ['flow', 'hift', 'hifigan']}
+    override_dict = {k: None for k in ["flow", "hift", "hifigan"]}
     if args.qwen_pretrain_path is not None:
-        override_dict['qwen_pretrain_path'] = args.qwen_pretrain_path
-    with open(args.config, 'r') as f:
+        override_dict["qwen_pretrain_path"] = args.qwen_pretrain_path
+    with open(args.config, "r") as f:
         configs = load_hyperpyyaml(f, overrides=override_dict)
-    configs['train_conf'].update(vars(args))
+    configs["train_conf"].update(vars(args))
 
     # Init env for ddp
     init_distributed(args)
 
     # Get dataset & dataloader
-    train_dataset, cv_dataset, train_data_loader, cv_data_loader = \
-        init_dataset_and_dataloader(args, configs, gan=False, dpo=False)
+    train_dataset, cv_dataset, train_data_loader, cv_data_loader = init_dataset_and_dataloader(
+        args, configs, gan=False, dpo=False
+    )
 
     # Do some sanity checks and save config to args.model_dir
     configs = check_modify_and_save_config(args, configs)
@@ -167,15 +153,15 @@ def main():
     start_step, start_epoch = 0, -1
     if args.checkpoint is not None:
         if os.path.exists(args.checkpoint):
-            state_dict = torch.load(args.checkpoint, map_location='cpu')
+            state_dict = torch.load(args.checkpoint, map_location="cpu")
             model.load_state_dict(state_dict, strict=False)
-            if 'step' in state_dict:
-                start_step = state_dict['step']
-            if 'epoch' in state_dict:
-                start_epoch = state_dict['epoch']
-            logging.info('Loaded checkpoint from {}'.format(args.checkpoint))
+            if "step" in state_dict:
+                start_step = state_dict["step"]
+            if "epoch" in state_dict:
+                start_epoch = state_dict["epoch"]
+            logging.info("Loaded checkpoint from {}".format(args.checkpoint))
         else:
-            logging.warning('checkpoint {} does not exist!'.format(args.checkpoint))
+            logging.warning("checkpoint {} does not exist!".format(args.checkpoint))
 
     # Apply freeze strategy
     freeze_draft_model(model)
@@ -184,14 +170,16 @@ def main():
     model = wrap_cuda_model(args, model)
 
     # Get optimizer & scheduler
-    model, optimizer, scheduler, optimizer_d, scheduler_d = init_optimizer_and_scheduler(args, configs, model, gan=False)
+    model, optimizer, scheduler, optimizer_d, scheduler_d = init_optimizer_and_scheduler(
+        args, configs, model, gan=False
+    )
     scheduler.set_step(start_step)
 
     # Save init checkpoints
-    info_dict = deepcopy(configs['train_conf'])
-    info_dict['step'] = start_step
-    info_dict['epoch'] = start_epoch
-    save_model(model, 'init', info_dict)
+    info_dict = deepcopy(configs["train_conf"])
+    info_dict["step"] = start_step
+    info_dict["epoch"] = start_epoch
+    save_model(model, "init", info_dict)
 
     # Get executor
     executor = Executor(gan=False)
@@ -199,17 +187,19 @@ def main():
 
     # Init scaler for amp
     scaler = torch.cuda.amp.GradScaler() if args.use_amp else None
-    logging.info('start step {} start epoch {}'.format(start_step, start_epoch))
+    logging.info("start step {} start epoch {}".format(start_step, start_epoch))
 
     # Start training loop
-    for epoch in range(start_epoch + 1, info_dict['max_epoch']):
+    for epoch in range(start_epoch + 1, info_dict["max_epoch"]):
         executor.epoch = epoch
         train_dataset.set_epoch(epoch)
         dist.barrier()
         group_join = dist.new_group(backend="gloo", timeout=datetime.timedelta(seconds=args.timeout))
-        executor.train_one_epoc(model, optimizer, scheduler, train_data_loader, cv_data_loader, writer, info_dict, scaler, group_join)
+        executor.train_one_epoc(
+            model, optimizer, scheduler, train_data_loader, cv_data_loader, writer, info_dict, scaler, group_join
+        )
         dist.destroy_process_group(group_join)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
