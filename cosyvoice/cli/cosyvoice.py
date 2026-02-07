@@ -190,7 +190,8 @@ class CosyVoice2(CosyVoice):
 
 class CosyVoice3(CosyVoice2):
 
-    def __init__(self, model_dir, load_trt=False, load_vllm=False, fp16=False, trt_concurrent=1, use_rl=False):
+    def __init__(self, model_dir, load_trt=False, load_vllm=False, fp16=False, trt_concurrent=1, use_rl=False,
+                 load_ssd=False, ssd_num_draft=3, ssd_tolerance=0.4):
         self.model_dir = model_dir
         self.fp16 = fp16
         if not os.path.exists(model_dir):
@@ -227,6 +228,13 @@ class CosyVoice3(CosyVoice2):
                                 '{}/flow.decoder.estimator.fp32.onnx'.format(model_dir),
                                 trt_concurrent,
                                 self.fp16)
+        if load_ssd:
+            draft_path = '{}/llm_draft.pt'.format(model_dir)
+            if os.path.exists(draft_path):
+                self.model.load_draft(draft_path, ssd_num_draft, ssd_tolerance)
+                logging.info('SSD enabled with draft model: {}'.format(draft_path))
+            else:
+                logging.warning('SSD requested but {} not found, falling back to standard AR'.format(draft_path))
         del configs
 
 

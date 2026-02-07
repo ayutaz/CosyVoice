@@ -448,3 +448,6 @@ class CosyVoice3Model(CosyVoice2Model):
             tts_speech = tts_speech[:, self.hift_cache_dict[uuid]['speech_offset']:]
             self.hift_cache_dict[uuid]['speech_offset'] += tts_speech.shape[1]
         return tts_speech
+
+    def load_draft(self, draft_model_path, num_draft_tokens=3, tolerance=0.4):
+        self.llm.load_draft(draft_model_path, self.device, num_draft_tokens, tolerance)
