@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
+
 import torch
 from transformers import Qwen2Config, Qwen2ForCausalLM
 
 from cosyvoice.utils.file_utils import logging
+from cosyvoice.utils.mask import make_pad_mask
 
 # Layer indices from 24-layer target to extract for 8-layer draft (paper: lower 2 + upper 6)
 DRAFT_LAYER_INDICES = [0, 1, 18, 19, 20, 21, 22, 23]
@@ -41,6 +44,17 @@ class DraftQwen2Encoder(torch.nn.Module):
             attention_dropout=0.0,
         )
         self.model = Qwen2ForCausalLM(draft_config)
+
+    def forward(self, xs: torch.Tensor, xs_lens: torch.Tensor):
+        T = xs.size(1)
+        masks = ~make_pad_mask(xs_lens, T)
+        outs = self.model(
+            inputs_embeds=xs,
+            attention_mask=masks,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        return outs.hidden_states[-1], masks.unsqueeze(1)
 
     def forward_one_step(self, xs, masks, cache=None):
         input_masks = masks[:, -1, :]
@@ -131,6 +145,45 @@ class SpeculativeDecoder:
         self.num_draft_tokens = num_draft_tokens
         self.tolerance = tolerance
 
+        # Statistics tracking
+        self.stats = {
+            'total_accepted': 0,
+            'total_drafted': 0,
+            'total_iterations': 0,
+            'total_tokens_generated': 0,
+            'total_lm_time': 0.0,
+            'total_audio_duration': 0.0,
+        }
+
+    def reset_stats(self):
+        for key in self.stats:
+            self.stats[key] = 0.0 if isinstance(self.stats[key], float) else 0
+
+    def get_stats(self, token_frame_rate=25, sample_rate=24000):
+        """Get SSD performance statistics.
+
+        Args:
+            token_frame_rate: tokens per second (default 25 for CosyVoice2).
+            sample_rate: audio sample rate.
+
+        Returns:
+            dict with acceptance_rate, lm_rtf, total_tokens, total_iterations.
+        """
+        s = self.stats
+        acceptance_rate = s['total_accepted'] / max(s['total_drafted'], 1)
+        audio_dur = s['total_tokens_generated'] / token_frame_rate if token_frame_rate > 0 else 0
+        lm_rtf = s['total_lm_time'] / max(audio_dur, 1e-9)
+        return {
+            'acceptance_rate': acceptance_rate,
+            'lm_rtf': lm_rtf,
+            'total_tokens': s['total_tokens_generated'],
+            'total_iterations': s['total_iterations'],
+            'total_accepted': s['total_accepted'],
+            'total_drafted': s['total_drafted'],
+            'lm_time_sec': s['total_lm_time'],
+            'audio_duration_sec': audio_dur,
+        }
+
     def _sample_token(self, logits, out_tokens, sampling, ignore_eos=True):
         """Sample a single token from logits using the sampling function."""
         logp = logits.log_softmax(dim=-1)
@@ -162,6 +215,9 @@ class SpeculativeDecoder:
         beta = self.tolerance
         out_tokens = []
         total_generated = 0
+        iter_accepted = 0
+        iter_drafted = 0
+        lm_start_time = time.time()
 
         # Phase 1: Process prefix through both target and draft, generate first token from target
         prefix_len = lm_input.shape[1]
@@ -329,6 +385,10 @@ class SpeculativeDecoder:
                 n_accepted = Ld
 
             # --- D. KV cache correction ---
+            # Track stats for this iteration
+            iter_drafted += Ld
+            iter_accepted += n_accepted
+
             target_remove = Ld - n_accepted
             draft_remove = Ld - n_accepted - 1
 
@@ -349,4 +409,13 @@ class SpeculativeDecoder:
             last_accepted = out_tokens[-1]
             current_emb = self.speech_embedding.weight[last_accepted].reshape(1, 1, -1)
 
-        logging.info("SSD decode reached max_len {}".format(max_len))
+        # Update cumulative stats
+        lm_elapsed = time.time() - lm_start_time
+        self.stats['total_lm_time'] += lm_elapsed
+        self.stats['total_accepted'] += iter_accepted
+        self.stats['total_drafted'] += iter_drafted
+        self.stats['total_iterations'] += 1
+        self.stats['total_tokens_generated'] += total_generated
+        logging.info("SSD decode: {} tokens, accepted {}/{} ({:.1f}%), lm_time {:.3f}s".format(
+            total_generated, iter_accepted, iter_drafted,
+            100 * iter_accepted / max(iter_drafted, 1), lm_elapsed))

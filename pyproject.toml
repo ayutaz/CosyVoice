@@ -82,4 +82,5 @@ extra-index-url = [
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.14.10",
+    "wandb>=0.24.2",
 ]

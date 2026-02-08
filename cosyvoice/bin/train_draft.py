@@ -43,7 +43,18 @@ from copy import deepcopy
 import os
 import torch
 import torch.distributed as dist
-import deepspeed
+
+try:
+    import deepspeed
+    HAS_DEEPSPEED = True
+except ImportError:
+    HAS_DEEPSPEED = False
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 from hyperpyyaml import load_hyperpyyaml
 from torch.distributed.elastic.multiprocessing.errors import record
@@ -116,7 +127,10 @@ def get_args():
         help="save model/optimizer states",
     )
     parser.add_argument("--timeout", default=60, type=int, help="timeout (in seconds) of cosyvoice_join.")
-    parser = deepspeed.add_config_arguments(parser)
+    parser.add_argument("--wandb_project", default="cosyvoice-ssd", help="wandb project name")
+    parser.add_argument("--wandb_run_name", default=None, help="wandb run name (auto-generated if not set)")
+    if HAS_DEEPSPEED:
+        parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
     return args
 
@@ -124,10 +138,25 @@ def get_args():
 @record
 def main():
     args = get_args()
-    os.environ["onnx_path"] = args.onnx_path if args.onnx_path else ""
+    if args.onnx_path:
+        os.environ["onnx_path"] = args.onnx_path
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
-    override_dict = {k: None for k in ["flow", "hift", "hifigan"]}
+    # Set default distributed env vars for single-GPU training
+    for key, default in [("MASTER_ADDR", "localhost"), ("MASTER_PORT", "29500"),
+                         ("WORLD_SIZE", "1"), ("RANK", "0"), ("LOCAL_RANK", "0")]:
+        if key not in os.environ:
+            os.environ[key] = default
+
+    # Build override dict — only override keys that exist in the config
+    # Draft configs may not have flow/hift/hifigan sections
+    override_dict = {}
+    with open(args.config, "r") as f:
+        config_text = f.read()
+    for key in ["flow", "hift", "hifigan"]:
+        # Check if key is a top-level YAML key (not indented, not a comment)
+        if "\n{}: ".format(key) in config_text or "\n{}:".format(key) in config_text or config_text.startswith("{}:".format(key)):
+            override_dict[key] = None
     if args.qwen_pretrain_path is not None:
         override_dict["qwen_pretrain_path"] = args.qwen_pretrain_path
     with open(args.config, "r") as f:
@@ -166,6 +195,28 @@ def main():
     # Apply freeze strategy
     freeze_draft_model(model)
 
+    # Initialize wandb (rank 0 only)
+    if HAS_WANDB and int(os.environ.get('RANK', 0)) == 0:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            config={
+                "model": args.model,
+                "config_file": args.config,
+                "train_engine": args.train_engine,
+                "total_params": total_params,
+                "trainable_params": trainable_params,
+                **{k: v for k, v in configs["train_conf"].items()
+                   if isinstance(v, (int, float, str, bool))},
+            },
+        )
+        logging.info("wandb initialized: project={}, run={}".format(
+            args.wandb_project, wandb.run.name))
+    elif not HAS_WANDB:
+        logging.warning("wandb not installed, skipping wandb logging")
+
     # Dispatch model from cpu to gpu
     model = wrap_cuda_model(args, model)
 
@@ -199,6 +250,10 @@ def main():
             model, optimizer, scheduler, train_data_loader, cv_data_loader, writer, info_dict, scaler, group_join
         )
         dist.destroy_process_group(group_join)
+
+    # Finish wandb
+    if HAS_WANDB and wandb.run is not None:
+        wandb.finish()
 
 
 if __name__ == "__main__":

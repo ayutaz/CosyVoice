@@ -634,6 +634,31 @@ class Qwen2LM(TransformerLM):
             lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
 
 
+    def load_draft(self, draft_model_path, device, num_draft_tokens=3, tolerance=0.4):
+        from cosyvoice.llm.speculative_decoding import DraftQwen2Encoder, SpeculativeDecoder
+        target_config = self.llm.model.config
+        draft_encoder = DraftQwen2Encoder(target_config)
+        draft_sd = torch.load(draft_model_path, map_location=device, weights_only=True)
+        # Remap keys: strip 'llm.' prefix for the draft encoder's own state
+        draft_encoder_sd = {}
+        for key, value in draft_sd.items():
+            if key.startswith('llm.'):
+                draft_encoder_sd[key[len('llm.'):]] = value
+        draft_encoder.load_state_dict(draft_encoder_sd, strict=False)
+        draft_encoder.to(device).eval()
+        self.ssd = SpeculativeDecoder(
+            target_llm=self.llm,
+            draft_llm=draft_encoder,
+            llm_decoder=self.llm_decoder,
+            speech_embedding=self.speech_embedding,
+            stop_token_ids=self.stop_token_ids,
+            sampling_fn=self.sampling,
+            num_draft_tokens=num_draft_tokens,
+            tolerance=tolerance,
+        )
+        logging.info('SSD loaded: draft_tokens={}, tolerance={}'.format(num_draft_tokens, tolerance))
+
+
 class CosyVoice3LM(Qwen2LM):
     def __init__(
             self,

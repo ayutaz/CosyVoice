@@ -394,6 +394,10 @@ class CosyVoice2Model(CosyVoiceModel):
             torch.cuda.current_stream().synchronize()
 
 
+    def load_draft(self, draft_model_path, num_draft_tokens=3, tolerance=0.4):
+        self.llm.load_draft(draft_model_path, self.device, num_draft_tokens, tolerance)
+
+
 class CosyVoice3Model(CosyVoice2Model):
 
     def __init__(self,

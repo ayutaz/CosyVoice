@@ -22,15 +22,25 @@ import re
 import datetime
 import yaml
 
-import deepspeed
+try:
+    import deepspeed
+    from deepspeed.runtime.zero.stage_1_and_2 import estimate_zero2_model_states_mem_needs_all_live
+    HAS_DEEPSPEED = True
+except ImportError:
+    HAS_DEEPSPEED = False
+
 import torch.optim as optim
 import torch.distributed as dist
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-
-from deepspeed.runtime.zero.stage_1_and_2 import estimate_zero2_model_states_mem_needs_all_live
 
 from cosyvoice.dataset.dataset import Dataset
 from cosyvoice.utils.scheduler import WarmupLR, NoamHoldAnnealing, ConstantLR
@@ -46,7 +56,10 @@ def init_distributed(args):
         torch.cuda.set_device(local_rank)
         dist.init_process_group(args.dist_backend)
     else:
-        deepspeed.init_distributed(dist_backend=args.dist_backend)
+        if HAS_DEEPSPEED:
+            deepspeed.init_distributed(dist_backend=args.dist_backend)
+        else:
+            raise ImportError('deepspeed is required for train_engine=deepspeed')
     return world_size, local_rank, rank
 
 
@@ -56,16 +69,17 @@ def init_dataset_and_dataloader(args, configs, gan, dpo):
     cv_dataset = Dataset(args.cv_data, data_pipeline=data_pipeline, mode='dev', gan=gan, dpo=dpo, shuffle=False, partition=False)
 
     # do not use persistent_workers=True, as whisper tokenizer opens tiktoken file each time when the for loop starts
+    prefetch = args.prefetch if args.num_workers > 0 else None
     train_data_loader = DataLoader(train_dataset,
                                    batch_size=None,
                                    pin_memory=args.pin_memory,
                                    num_workers=args.num_workers,
-                                   prefetch_factor=args.prefetch)
+                                   prefetch_factor=prefetch)
     cv_data_loader = DataLoader(cv_dataset,
                                 batch_size=None,
                                 pin_memory=args.pin_memory,
                                 num_workers=args.num_workers,
-                                prefetch_factor=args.prefetch)
+                                prefetch_factor=prefetch)
     return train_dataset, cv_dataset, train_data_loader, cv_data_loader
 
 
@@ -99,7 +113,7 @@ def wrap_cuda_model(args, model):
         model.cuda()
         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
     else:
-        if int(os.environ.get('RANK', 0)) == 0:
+        if HAS_DEEPSPEED and int(os.environ.get('RANK', 0)) == 0:
             logging.info("Estimating model states memory needs (zero2)...")
             estimate_zero2_model_states_mem_needs_all_live(
                 model,
@@ -130,7 +144,7 @@ def init_optimizer_and_scheduler(args, configs, model, gan):
             raise ValueError("unknown scheduler: " + configs['train_conf'])
 
         # use deepspeed optimizer for speedup
-        if args.train_engine == "deepspeed":
+        if args.train_engine == "deepspeed" and HAS_DEEPSPEED:
             def scheduler(opt):
                 return scheduler_type(opt, **configs['train_conf']['scheduler_conf'])
             model, optimizer, _, scheduler = deepspeed.initialize(
@@ -328,7 +342,7 @@ def log_per_step(writer, info_dict):
     loss_dict = info_dict['loss_dict']
     rank = int(os.environ.get('RANK', 0))
 
-    # only rank 0 write to tensorboard to avoid multi-process write
+    # only rank 0 write to tensorboard/wandb to avoid multi-process write
     if writer is not None:
         if (info_dict['train_engine'] == 'deepspeed' and info_dict['is_gradient_accumulation_boundary'] is True) or \
            (info_dict['train_engine'] == 'torch_ddp' and (info_dict['batch_idx'] + 1) % info_dict['accum_grad'] == 0):
@@ -336,6 +350,12 @@ def log_per_step(writer, info_dict):
                 writer.add_scalar('{}/{}'.format(tag, k), info_dict[k], step + 1)
             for k, v in loss_dict.items():
                 writer.add_scalar('{}/{}'.format(tag, k), v, step + 1)
+            # wandb logging
+            if HAS_WANDB and wandb.run is not None:
+                wandb_dict = {'{}/{}'.format(tag, k): info_dict[k] for k in ['epoch', 'lr', 'grad_norm']}
+                for k, v in loss_dict.items():
+                    wandb_dict['{}/{}'.format(tag, k)] = v.item() if hasattr(v, 'item') else v
+                wandb.log(wandb_dict, step=step + 1)
 
     # TRAIN & CV, Shell log (stdout)
     if (info_dict['batch_idx'] + 1) % info_dict['log_interval'] == 0:
@@ -365,3 +385,9 @@ def log_per_save(writer, info_dict):
             writer.add_scalar('{}/{}'.format(tag, k), info_dict[k], step + 1)
         for k, v in loss_dict.items():
             writer.add_scalar('{}/{}'.format(tag, k), v, step + 1)
+        # wandb logging for CV
+        if HAS_WANDB and wandb.run is not None:
+            wandb_dict = {'{}/{}'.format(tag, k): info_dict[k] for k in ['epoch', 'lr']}
+            for k, v in loss_dict.items():
+                wandb_dict['{}/{}'.format(tag, k)] = v.item() if hasattr(v, 'item') else v
+            wandb.log(wandb_dict, step=step + 1)
