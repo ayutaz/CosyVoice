@@ -31,12 +31,13 @@ def job(utt_list, parquet_file, utt2parquet_file, spk2parquet_file):
         data_list.append(data)
 
     # 保存到parquet,utt2parquet_file,spk2parquet_file
+    spk_list = [utt2spk[utt] for utt in utt_list]
     df = pd.DataFrame()
     df['utt'] = utt_list
     df['audio_data'] = data_list
     df['wav'] = [utt2wav[utt] for utt in utt_list]
     df['text'] = [utt2text[utt] for utt in utt_list]
-    df['spk'] = [utt2spk[utt] for utt in utt_list]
+    df['spk'] = spk_list
     if utt2embedding is not None:
         df['utt_embedding'] = [utt2embedding[utt] for utt in utt_list]
     if spk2embedding is not None:
@@ -75,25 +76,26 @@ if __name__ == "__main__":
                         help='Use Direct Preference Optimization')
     args = parser.parse_args()
 
+    # NOTE use utf-8 + maxsplit so japanese text and paths survive on any locale
     utt2wav, utt2text, utt2spk = {}, {}, {}
-    with open('{}/wav.scp'.format(args.src_dir)) as f:
+    with open('{}/wav.scp'.format(args.src_dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
+            l = l.replace('\n', '').split(maxsplit=1)
             utt2wav[l[0]] = l[1]
-    with open('{}/text'.format(args.src_dir)) as f:
+    with open('{}/text'.format(args.src_dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2text[l[0]] = ' '.join(l[1:])
-    with open('{}/utt2spk'.format(args.src_dir)) as f:
+            l = l.replace('\n', '').split(maxsplit=1)
+            utt2text[l[0]] = l[1] if len(l) > 1 else ''
+    with open('{}/utt2spk'.format(args.src_dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
+            l = l.replace('\n', '').split(maxsplit=1)
             utt2spk[l[0]] = l[1]
     if os.path.exists('{}/instruct'.format(args.src_dir)):
         utt2instruct = {}
-        with open('{}/instruct'.format(args.src_dir)) as f:
+        with open('{}/instruct'.format(args.src_dir), encoding='utf-8') as f:
             for l in f:
-                l = l.replace('\n', '').split()
-                utt2instruct[l[0]] = ' '.join(l[1:])
+                l = l.replace('\n', '').split(maxsplit=1)
+                utt2instruct[l[0]] = l[1] if len(l) > 1 else ''
     else:
         utt2instruct = None
     utt2embedding = torch.load('{}/utt2embedding.pt'.format(args.src_dir)) if os.path.exists('{}/utt2embedding.pt'.format(args.src_dir)) else None
@@ -105,7 +107,7 @@ if __name__ == "__main__":
 
     # Using process pool to speedup
     pool = multiprocessing.Pool(processes=args.num_processes)
-    parquet_list, utt2parquet_list, spk2parquet_list = [], [], []
+    parquet_list, utt2parquet_list, spk2parquet_list, results = [], [], [], []
     for i, j in enumerate(range(0, len(utts), args.num_utts_per_parquet)):
         parquet_file = os.path.join(args.des_dir, 'parquet_{:09d}.tar'.format(i))
         utt2parquet_file = os.path.join(args.des_dir, 'utt2parquet_{:09d}.json'.format(i))
@@ -113,9 +115,12 @@ if __name__ == "__main__":
         parquet_list.append(parquet_file)
         utt2parquet_list.append(utt2parquet_file)
         spk2parquet_list.append(spk2parquet_file)
-        pool.apply_async(job, (utts[j: j + args.num_utts_per_parquet], parquet_file, utt2parquet_file, spk2parquet_file))
+        results.append(pool.apply_async(job, (utts[j: j + args.num_utts_per_parquet], parquet_file, utt2parquet_file, spk2parquet_file)))
     pool.close()
     pool.join()
+    # NOTE surface worker exceptions, otherwise failed shards are silently missing
+    for result in results:
+        result.get()
 
     with open('{}/data.list'.format(args.des_dir), 'w', encoding='utf8') as f1, \
             open('{}/utt2data.list'.format(args.des_dir), 'w', encoding='utf8') as f2, \
