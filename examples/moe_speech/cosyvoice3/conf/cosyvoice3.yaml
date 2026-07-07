@@ -120,6 +120,10 @@ hifigan: !new:cosyvoice.hifigan.hifigan.HiFiGan
 
 # processor functions
 parquet_opener: !name:cosyvoice.dataset.processor.parquet_opener
+# NOTE llm training never touches the waveform (speech tokens are precomputed), so the
+# llm pipeline skips the audio_data column (~99% of the shard bytes) and every audio op
+parquet_opener_llm: !name:cosyvoice.dataset.processor.parquet_opener
+    columns: ['utt', 'text', 'instruct', 'utt_embedding', 'spk_embedding', 'speech_token']
 get_tokenizer: !name:cosyvoice.tokenizer.tokenizer.get_qwen_tokenizer
     token_path: !ref <qwen_pretrain_path>
     skip_special_tokens: True
@@ -129,6 +133,11 @@ tokenize: !name:cosyvoice.dataset.processor.tokenize
     get_tokenizer: !ref <get_tokenizer>
     allowed_special: !ref <allowed_special>
 filter: !name:cosyvoice.dataset.processor.filter
+    max_length: 6000
+    min_length: 100
+    token_max_length: 200
+    token_min_length: 1
+filter_speech_token: !name:cosyvoice.dataset.processor.filter_speech_token
     max_length: 6000
     min_length: 100
     token_max_length: 200
@@ -149,8 +158,6 @@ feat_extractor: !name:matcha.utils.audio.mel_spectrogram
 compute_fbank: !name:cosyvoice.dataset.processor.compute_fbank
     feat_extractor: !ref <feat_extractor>
     num_frames: 960
-compute_whisper_fbank: !name:cosyvoice.dataset.processor.compute_whisper_fbank
-    num_frames: 960
 compute_f0: !name:cosyvoice.dataset.processor.compute_f0
     sample_rate: !ref <sample_rate>
     hop_size: 480
@@ -160,28 +167,34 @@ shuffle: !name:cosyvoice.dataset.processor.shuffle
     shuffle_size: 1000
 sort: !name:cosyvoice.dataset.processor.sort
     sort_size: 500  # sort_size should be less than shuffle_size
+sort_llm: !name:cosyvoice.dataset.processor.sort_by_speech_token
+    sort_size: 500  # sort_size should be less than shuffle_size
 batch: !name:cosyvoice.dataset.processor.batch
     batch_type: 'dynamic'
-    # NOTE upstream default is 2000, sized for small GPUs. On H100 80GB the 0.5B llm
-    # leaves plenty of room, tune in the 10000-30000 range and watch for OOM
     max_frames_in_batch: 15000
+batch_llm: !name:cosyvoice.dataset.processor.dynamic_batch_llm
+    # NOTE unit is 50Hz mel frames (2 x speech tokens), 30000 = 600s of audio per batch.
+    # Sized for H100 80GB, use 15000 on 24GB cards (RTX 4090 smoke test) or it will OOM
+    max_frames_in_batch: 30000
 padding: !name:cosyvoice.dataset.processor.padding
+    use_spk_embedding: False # change to True during sft
+padding_llm: !name:cosyvoice.dataset.processor.padding_llm
     use_spk_embedding: False # change to True during sft
 
 
 # dataset processor pipeline
+# NOTE llm-only waveform-free pipeline: parquet column pruning + token-length based
+# filter/sort/batch. flow/hifigan training with this config must restore the original
+# audio pipeline (parquet_opener/filter/resample/compute_fbank/sort/batch/padding)
 data_pipeline: [
-    !ref <parquet_opener>,
+    !ref <parquet_opener_llm>,
     !ref <tokenize>,
-    !ref <filter>,
-    !ref <resample>,
-    !ref <compute_fbank>,
+    !ref <filter_speech_token>,
     !ref <parse_embedding>,
-    !ref <compute_whisper_fbank>,
     !ref <shuffle>,
-    !ref <sort>,
-    !ref <batch>,
-    !ref <padding>,
+    !ref <sort_llm>,
+    !ref <batch_llm>,
+    !ref <padding_llm>,
 ]
 data_pipeline_gan: [
     !ref <parquet_opener>,
@@ -205,12 +218,12 @@ train_conf:
         lr: 1e-5 # change to 1e-5 during sft
     scheduler: constantlr # change to constantlr during sft
     scheduler_conf:
-        warmup_steps: 2500
-    max_epoch: 10 # finetuning on ~600h, upstream pretraining default is 200
+        warmup_steps: 2500 # NOTE dead config: constantlr ignores scheduler_conf, no warmup happens
+    max_epoch: 5 # finetuning on ~600h flattens on CV loss in 3-5 epochs, extend via --checkpoint resume if still improving
     grad_clip: 5
     accum_grad: 1 # batch is already large via max_frames_in_batch
     log_interval: 100
-    save_per_step: 2000 # one epoch is long, keep intermediate checkpoints for spot instances
+    save_per_step: 1000 # one epoch is long, keep intermediate checkpoints for spot instances
 
 # gan train conf
 train_conf_gan:

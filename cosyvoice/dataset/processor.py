@@ -28,12 +28,14 @@ from cosyvoice.utils.onnx import embedding_extractor, online_feature
 AUDIO_FORMAT_SETS = {'flac', 'mp3', 'm4a', 'ogg', 'opus', 'wav', 'wma'}
 
 
-def parquet_opener(data, mode='train'):
+def parquet_opener(data, mode='train', columns=None):
     """ Give url or local file, return file descriptor
         Inplace operation.
 
         Args:
             data(Iterable[str]): url or local file list
+            columns(List[str]): optional parquet column projection, e.g. llm training
+                can skip the audio_data column which holds ~99% of the shard bytes
 
         Returns:
             Iterable[{src, stream}]
@@ -42,7 +44,7 @@ def parquet_opener(data, mode='train'):
         assert 'src' in sample
         url = sample['src']
         try:
-            for df in pq.ParquetFile(url).iter_batches(batch_size=64):
+            for df in pq.ParquetFile(url).iter_batches(batch_size=64, columns=columns):
                 df = df.to_pandas()
                 for i in range(len(df)):
                     sample.update(dict(df.loc[i]))
@@ -424,6 +426,107 @@ def padding(data, use_spk_embedding, mode='train', gan=False, dpo=False):
             reject_speech_token = [torch.tensor(sample[i]['reject_speech_token']) for i in order]
             batch['reject_speech_token_len'] = torch.tensor([i.size(0) for i in reject_speech_token], dtype=torch.int32)
             batch['reject_speech_token'] = pad_sequence(reject_speech_token, batch_first=True, padding_value=0)
+        if use_spk_embedding is True:
+            batch["embedding"] = batch["spk_embedding"]
+        else:
+            batch["embedding"] = batch["utt_embedding"]
+        yield batch
+
+
+# NOTE the *_llm processors below are a waveform-free pipeline for llm training with
+# precomputed speech tokens: no audio decode, no resample, no mel/whisper fbank. Use them
+# together with parquet_opener columns pruning (see examples/moe_speech/cosyvoice3). They
+# rely on mel_len == 2 * len(speech_token) (25Hz tokens, 50Hz mel, token_mel_ratio 2) so
+# max_frames_in_batch keeps its mel-frame semantics. llm non-DPO training only: padding_llm
+# bypasses the gan/dpo kwarg injection in cosyvoice/dataset/dataset.py which keys on the
+# function name 'padding'.
+def filter_speech_token(data,
+                        max_length=10240,
+                        min_length=10,
+                        token_max_length=200,
+                        token_min_length=1,
+                        min_output_input_ratio=0.0005,
+                        max_output_input_ratio=1,
+                        mode='train'):
+    """ Same semantics as filter() but the 10ms frame count is derived from the
+        precomputed speech token length (1 token = 40ms) instead of decoding the wav.
+    """
+    for sample in data:
+        if len(sample['speech_token']) == 0:
+            continue
+        num_frames = len(sample['speech_token']) * 4
+        if num_frames < min_length:
+            continue
+        if num_frames > max_length:
+            continue
+        if len(sample['text_token']) < token_min_length:
+            continue
+        if len(sample['text_token']) > token_max_length:
+            continue
+        if len(sample['text_token']) / num_frames < min_output_input_ratio:
+            continue
+        if len(sample['text_token']) / num_frames > max_output_input_ratio:
+            continue
+        yield sample
+
+
+def sort_by_speech_token(data, sort_size=500, mode='train'):
+    """ sort() keyed on speech token length, for pipelines without speech_feat """
+    buf = []
+    for sample in data:
+        buf.append(sample)
+        if len(buf) >= sort_size:
+            buf.sort(key=lambda x: len(x['speech_token']))
+            for x in buf:
+                yield x
+            buf = []
+    buf.sort(key=lambda x: len(x['speech_token']))
+    for x in buf:
+        yield x
+
+
+def dynamic_batch_llm(data, max_frames_in_batch=12000, mode='train'):
+    """ dynamic_batch() with the mel frame count derived from the speech token length,
+        so max_frames_in_batch means the same thing as in the audio pipeline
+    """
+    buf = []
+    longest_frames = 0
+    for sample in data:
+        new_sample_frames = len(sample['speech_token']) * 2
+        longest_frames = max(longest_frames, new_sample_frames)
+        frames_after_padding = longest_frames * (len(buf) + 1)
+        if frames_after_padding > max_frames_in_batch:
+            yield buf
+            buf = [sample]
+            longest_frames = new_sample_frames
+        else:
+            buf.append(sample)
+    if len(buf) > 0:
+        yield buf
+
+
+def padding_llm(data, use_spk_embedding, mode='train'):
+    """ padding() emitting only the keys the llm forward reads: text/speech/instruct
+        tokens plus embeddings, no waveform, no speech_feat, no whisper_feat
+    """
+    for sample in data:
+        assert isinstance(sample, list)
+        order = torch.argsort(torch.tensor([len(x['speech_token']) for x in sample], dtype=torch.int32), descending=True)
+        batch = {}
+        batch['utts'] = [sample[i]['utt'] for i in order]
+        batch['text'] = [sample[i]['text'] for i in order]
+        text_token = [torch.tensor(sample[i]['text_token']) for i in order]
+        batch['text_token_len'] = torch.tensor([i.size(0) for i in text_token], dtype=torch.int32)
+        batch['text_token'] = pad_sequence(text_token, batch_first=True, padding_value=0)
+        speech_token = [torch.tensor(sample[i]['speech_token']) for i in order]
+        batch['speech_token_len'] = torch.tensor([i.size(0) for i in speech_token], dtype=torch.int32)
+        batch['speech_token'] = pad_sequence(speech_token, batch_first=True, padding_value=0)
+        if all('instruct_token' in sample[i] for i in order):
+            instruct_token = [torch.tensor(sample[i]['instruct_token']) for i in order]
+            batch['instruct_token_len'] = torch.tensor([i.size(0) for i in instruct_token], dtype=torch.int32)
+            batch['instruct_token'] = pad_sequence(instruct_token, batch_first=True, padding_value=0)
+        batch['utt_embedding'] = torch.stack([sample[i]['utt_embedding'] for i in order], dim=0)
+        batch['spk_embedding'] = torch.stack([sample[i]['spk_embedding'] for i in order], dim=0)
         if use_spk_embedding is True:
             batch["embedding"] = batch["spk_embedding"]
         else:

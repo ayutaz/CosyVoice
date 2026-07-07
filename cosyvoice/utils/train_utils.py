@@ -99,7 +99,16 @@ def wrap_cuda_model(args, model):
     if args.train_engine == "torch_ddp":  # native pytorch ddp
         assert (torch.cuda.is_available())
         model.cuda()
-        model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+        if world_size > 1:
+            # NOTE broadcast_buffers is only needed when buffers change during training
+            # (BatchNorm style), constant buffers like rotary inv_freq do not need the
+            # per-forward broadcast. gradient_as_bucket_view avoids a full grad copy per step
+            has_batchnorm = any(isinstance(m, torch.nn.modules.batchnorm._BatchNorm) for m in model.modules())
+            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True,
+                                                              gradient_as_bucket_view=True,
+                                                              broadcast_buffers=has_batchnorm)
+        else:
+            logging.info('WORLD_SIZE=1, skipping the DDP wrapper and its per-step overhead')
     else:
         if int(os.environ.get('RANK', 0)) == 0:
             logging.info("Estimating model states memory needs (zero2)...")
@@ -112,10 +121,15 @@ def wrap_cuda_model(args, model):
 
 def init_optimizer_and_scheduler(args, configs, model, gan):
     if gan is False:
+        # NOTE fused Adam runs one kernel pass over the params instead of ~10 foreach
+        # passes, only available when all params live on CUDA (torch_ddp moves them
+        # before this point, deepspeed/cpu paths keep today's behavior)
+        optim_conf = dict(configs['train_conf']['optim_conf'])
+        optim_conf.setdefault('fused', all(p.is_cuda for p in model.parameters()))
         if configs['train_conf']['optim'] == 'adam':
-            optimizer = optim.Adam(model.parameters(), **configs['train_conf']['optim_conf'])
+            optimizer = optim.Adam(model.parameters(), **optim_conf)
         elif configs['train_conf']['optim'] == 'adamw':
-            optimizer = optim.AdamW(model.parameters(), **configs['train_conf']['optim_conf'])
+            optimizer = optim.AdamW(model.parameters(), **optim_conf)
         else:
             raise ValueError("unknown optimizer: " + configs['train_conf'])
 
@@ -146,10 +160,12 @@ def init_optimizer_and_scheduler(args, configs, model, gan):
 
     else:
         # currently we wrap generator and discriminator in one model, so we cannot use deepspeed
+        # NOTE model is only DDP-wrapped when WORLD_SIZE > 1
+        m = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
         if configs['train_conf']['optim'] == 'adam':
-            optimizer = optim.Adam(model.module.generator.parameters(), **configs['train_conf']['optim_conf'])
+            optimizer = optim.Adam(m.generator.parameters(), **configs['train_conf']['optim_conf'])
         elif configs['train_conf']['optim'] == 'adamw':
-            optimizer = optim.AdamW(model.module.generator.parameters(), **configs['train_conf']['optim_conf'])
+            optimizer = optim.AdamW(m.generator.parameters(), **configs['train_conf']['optim_conf'])
         else:
             raise ValueError("unknown optimizer: " + configs['train_conf'])
 
@@ -166,9 +182,9 @@ def init_optimizer_and_scheduler(args, configs, model, gan):
             raise ValueError("unknown scheduler: " + configs['train_conf'])
 
         if configs['train_conf']['optim_d'] == 'adam':
-            optimizer_d = optim.Adam(model.module.discriminator.parameters(), **configs['train_conf']['optim_conf_d'])
+            optimizer_d = optim.Adam(m.discriminator.parameters(), **configs['train_conf']['optim_conf_d'])
         elif configs['train_conf']['optim_d'] == 'adamw':
-            optimizer_d = optim.AdamW(model.module.discriminator.parameters(), **configs['train_conf']['optim_conf_d'])
+            optimizer_d = optim.AdamW(m.discriminator.parameters(), **configs['train_conf']['optim_conf_d'])
         else:
             raise ValueError("unknown optimizer: " + configs['train_conf'])
 
@@ -201,7 +217,8 @@ def save_model(model, model_name, info_dict):
 
     if info_dict["train_engine"] == "torch_ddp":
         if rank == 0:
-            torch.save({**model.module.state_dict(), 'epoch': info_dict['epoch'], 'step': info_dict['step']}, save_model_path)
+            m = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+            torch.save({**m.state_dict(), 'epoch': info_dict['epoch'], 'step': info_dict['step']}, save_model_path)
     else:
         with torch.no_grad():
             model.save_checkpoint(save_dir=model_dir,
@@ -248,10 +265,12 @@ def batch_forward(model, batch, scaler, info_dict, ref_model=None, dpo_loss=None
     else:  # fp32
         dtype = torch.float32
 
+    # NOTE autocast is keyed on the dtype, not on the scaler: bf16 needs no GradScaler
+    # and cv() passes scaler=None but should still run in the training dtype
     if info_dict['train_engine'] == 'torch_ddp':
-        autocast = torch.cuda.amp.autocast(enabled=scaler is not None, dtype=dtype)
+        autocast = torch.amp.autocast('cuda', enabled=dtype in (torch.float16, torch.bfloat16), dtype=dtype)
     else:
-        autocast = torch.cuda.amp.autocast(enabled=True, dtype=dtype, cache_enabled=False)
+        autocast = torch.amp.autocast('cuda', enabled=True, dtype=dtype, cache_enabled=False)
 
     with autocast:
         info_dict['loss_dict'] = model(batch, device)
@@ -331,7 +350,9 @@ def log_per_step(writer, info_dict):
     rank = int(os.environ.get('RANK', 0))
 
     # only rank 0 write to tensorboard to avoid multi-process write
-    if writer is not None:
+    # NOTE scalar writes force a device->host copy per CUDA tensor, throttle them to
+    # log_interval like the stdout log below instead of writing every optimizer step
+    if writer is not None and (info_dict['batch_idx'] + 1) % info_dict['log_interval'] == 0:
         if (info_dict['train_engine'] == 'deepspeed' and info_dict['is_gradient_accumulation_boundary'] is True) or \
            (info_dict['train_engine'] == 'torch_ddp' and (info_dict['batch_idx'] + 1) % info_dict['accum_grad'] == 0):
             for k in ['epoch', 'lr', 'grad_norm']:

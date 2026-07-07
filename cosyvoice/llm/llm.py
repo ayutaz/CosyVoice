@@ -231,13 +231,15 @@ class Qwen2Encoder(torch.nn.Module):
     def forward(self, xs: torch.Tensor, xs_lens: torch.Tensor):
         T = xs.size(1)
         masks = ~make_pad_mask(xs_lens, T)
-        outs = self.model(
+        # NOTE call the Qwen2Model backbone directly, the Qwen2ForCausalLM wrapper would
+        # also project every position onto the 151936-entry text vocab, a multi-GB logits
+        # tensor that training never reads. last_hidden_state == hidden_states[-1]
+        outs = self.model.model(
             inputs_embeds=xs,
             attention_mask=masks,
-            output_hidden_states=True,
-            return_dict=True,
+            use_cache=False,
         )
-        return outs.hidden_states[-1], masks.unsqueeze(1)
+        return outs.last_hidden_state, masks.unsqueeze(1)
 
     def forward_one_step(self, xs, masks, cache=None):
         input_masks = masks[:, -1, :]

@@ -39,11 +39,22 @@ if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
   done
 fi
 
+num_workers=8
 if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
   echo "Prepare required parquet format data, you should have prepared wav.scp/text/utt2spk/spk2utt/utt2embedding.pt/spk2embedding.pt/utt2speech_token.pt"
   for x in train dev; do
+    # NOTE dev must have >= num_workers shards, otherwise the DistributedSampler
+    # duplicates the shard list and every dataloader worker evaluates the WHOLE dev
+    # set, multiplying every CV pass by num_workers
+    if [ $x = dev ]; then
+      n_utts=$(wc -l < data/$x/wav.scp)
+      utts_per_parquet=$(( (n_utts + num_workers - 1) / num_workers ))
+      [ $utts_per_parquet -lt 1 ] && utts_per_parquet=1
+    else
+      utts_per_parquet=1000
+    fi
     mkdir -p data/$x/parquet
-    python ../../../tools/make_parquet_list.py --num_utts_per_parquet 1000 \
+    python ../../../tools/make_parquet_list.py --num_utts_per_parquet $utts_per_parquet \
       --num_processes 16 \
       --src_dir data/$x \
       --des_dir data/$x/parquet
@@ -55,8 +66,9 @@ export CUDA_VISIBLE_DEVICES="0"
 num_gpus=$(echo $CUDA_VISIBLE_DEVICES | awk -F "," '{print NF}')
 job_id=1986
 dist_backend="nccl"
-num_workers=8
-prefetch=100
+# NOTE prefetch is per worker: 8 x 8 workers = 64 batches in flight, plenty; the old 100
+# could pin ~10GB+ of host RAM for zero throughput benefit
+prefetch=8
 train_engine=torch_ddp
 if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
   echo "Run train. We only finetune llm for japanese"
@@ -65,6 +77,10 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
   fi
   cp data/train/parquet/data.list data/train.data.list
   cp data/dev/parquet/data.list data/dev.data.list
+  # NOTE tame allocator fragmentation from highly variable dynamic batch shapes
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  # NOTE --onnx_path is intentionally NOT passed: speech tokens are precomputed in the
+  # parquet, passing it would load an unused ONNX CUDA session into training VRAM
   for model in llm; do
     torchrun --nnodes=1 --nproc_per_node=$num_gpus \
         --rdzv_id=$job_id --rdzv_backend="c10d" --rdzv_endpoint="localhost:1234" \
@@ -74,7 +90,6 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
       --train_data data/train.data.list \
       --cv_data data/dev.data.list \
       --qwen_pretrain_path $pretrained_model_dir/CosyVoice-BlankEN \
-      --onnx_path $pretrained_model_dir \
       --model $model \
       --checkpoint $pretrained_model_dir/$model.pt \
       --model_dir `pwd`/exp/cosyvoice3_ja/$model/$train_engine \
@@ -84,6 +99,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
       --prefetch ${prefetch} \
       --pin_memory \
       --use_amp \
+      --torch_compile \
       --deepspeed_config ./conf/ds_stage2.json \
       --deepspeed.save_states model+optimizer
   done

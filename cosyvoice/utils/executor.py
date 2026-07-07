@@ -19,6 +19,7 @@ import os
 
 import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from cosyvoice.utils.train_utils import update_parameter_and_lr, log_per_step, log_per_save, batch_forward, batch_backward, save_model, cosyvoice_join
 
@@ -48,7 +49,8 @@ class Executor:
         model.train()
         if self.ref_model is not None:
             self.ref_model.eval()
-        model_context = model.join if info_dict['train_engine'] == 'torch_ddp' else nullcontext
+        # NOTE the model is only DDP-wrapped when WORLD_SIZE > 1, join/no_sync are DDP-only APIs
+        model_context = model.join if isinstance(model, DDP) else nullcontext
         with model_context():
             for batch_idx, batch_dict in enumerate(train_data_loader):
                 info_dict["tag"] = "TRAIN"
@@ -61,7 +63,7 @@ class Executor:
                 # Disable gradient synchronizations across DDP processes.
                 # Within this context, gradients will be accumulated on module
                 # variables, which will later be synchronized.
-                if info_dict['train_engine'] == 'torch_ddp' and (batch_idx + 1) % info_dict["accum_grad"] != 0:
+                if isinstance(model, DDP) and (batch_idx + 1) % info_dict["accum_grad"] != 0:
                     context = model.no_sync
                 # Used for single gpu training and DDP gradient synchronization
                 # processes.
@@ -98,7 +100,8 @@ class Executor:
         # torch.nn.parallel.DistributedDataParallel to be able to train
         # with uneven inputs across participating processes.
         model.train()
-        model_context = model.join if info_dict['train_engine'] == 'torch_ddp' else nullcontext
+        # NOTE the model is only DDP-wrapped when WORLD_SIZE > 1, join/no_sync are DDP-only APIs
+        model_context = model.join if isinstance(model, DDP) else nullcontext
         with model_context():
             for batch_idx, batch_dict in enumerate(train_data_loader):
                 info_dict["tag"] = "TRAIN"
@@ -111,7 +114,7 @@ class Executor:
                 # Disable gradient synchronizations across DDP processes.
                 # Within this context, gradients will be accumulated on module
                 # variables, which will later be synchronized.
-                if info_dict['train_engine'] == 'torch_ddp' and (batch_idx + 1) % info_dict["accum_grad"] != 0:
+                if isinstance(model, DDP) and (batch_idx + 1) % info_dict["accum_grad"] != 0:
                     context = model.no_sync
                 # Used for single gpu training and DDP gradient synchronization
                 # processes.

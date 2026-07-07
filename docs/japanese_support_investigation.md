@@ -251,26 +251,45 @@ CUDA ドライバは 12.5+ のホストで torch 2.3.1 (cu121) がそのまま�
 
 ### 6.2 精度設定 (bf16 / fp16) — 調査結果
 
-- **`--use_amp` + torch_ddp で既に bf16 になっている**(`train_utils.py:74`: `dtype = 'bf16' if args.use_amp else 'fp32'`)。run.sh は `--use_amp` 指定済みなので追加作業なし。
+- **`--use_amp` + torch_ddp で既に bf16 になっている**(`train_utils.py`: `dtype = 'bf16' if args.use_amp else 'fp32'`)。run.sh は `--use_amp` 指定済み。
 - H100 では bf16 が正解(fp16 と同速で、loss scale の不安定性がない)。fp16 は deepspeed エンジン + ds_config 経由でのみ選択される。
-- GradScaler は bf16 では本来不要だが実装上共用されており無害(微小オーバーヘッドのみ)。
+- **GradScaler は bf16 では純オーバーヘッドだったため廃止(2026-07-07 実装)**: autocast の有効化を scaler ではなく dtype で判定するよう変更し、scaler は fp16 時のみ生成。副次効果として **CV パスも bf16 で走る**ようになり約2倍高速(従来は fp32 だった)。
 
 ### 6.3 attention — 調査結果
 
-- `Qwen2Encoder` は `Qwen2ForCausalLM.from_pretrained()` をデフォルト設定で呼んでおり、transformers 4.51 では **SDPA (scaled_dot_product_attention) が既定で有効**。H100 では SDPA が flash/cuDNN バックエンドに自動ディスパッチされるため、追加設定なしで高速。
-- `flash_attention_2`(flash-attn パッケージ)への切替は +10〜20% 程度の見込みだが、本ワークロードは系列が短く(≤15 秒 ≒ 375 speech token)、ホイールの torch バージョン整合の手間に見合わないため見送り(将来の 8,000h 学習では再検討)。
+- `Qwen2Encoder` は `Qwen2ForCausalLM.from_pretrained()` をデフォルト設定で呼んでおり、transformers 4.51 では **SDPA が既定で有効**。ただし 2D パディングマスクを渡すため SDPA の flash バックエンドは不適格で、4D float マスク経由の効率的なカーネルにディスパッチされる。
+- `flash_attention_2` は診断上は正しい改善候補(2-5%)だが、torch 2.11+cu128 向けビルド済みホイールが保証されず、ソースビルド 30 分〜2 時間がスポット再起動ごとに再発しうるため**却下**(8,000h 学習で再検討)。
 
-### 6.4 学習スループットの実装済み変更
+### 6.4 学習スループットの実装済み変更 (ultracode 監査 2026-07-07、6視点×懐疑検証で25件採用)
+
+コード側(全レシピ共有、数値は不変):
+
+| 変更 | 場所 | 期待効果 |
+|---|---|---|
+| **死んだ lm_head 行列積のスキップ** | `llm.py` Qwen2Encoder.forward が Qwen2Model バックボーンを直接呼ぶ(`use_cache=False` も指定)。151,936 語彙への [B*T,896] 射影が毎ステップ計算→破棄されていた | **5-10%/step + VRAM 2.6-5GB 解放**(hidden states はビット一致、テストで検証済み) |
+| **LabelSmoothingLoss の CE 高速路** | smoothing==0 時に `F.cross_entropy` に短絡。旧実装は (B*T,6761) の dense fp32 一時テンソル数本 + forward 中の `.item()` GPU→CPU 同期 | 3-5%/step + 1-2GB(値・勾配一致をテストで検証済み) |
+| **bf16 で GradScaler 廃止** | `train.py`/`train_utils.py`、autocast を dtype 基準に | 2-3%/step + CV が bf16 化 |
+| **fused Adam** | `train_utils.py`、全パラメータが CUDA 上のときのみ `fused=True` | 3-8%/step(~10 回の foreach パス→1 カーネル) |
+| **WORLD_SIZE==1 で DDP スキップ** | `wrap_cuda_model` + executor/save_model の 5 箇所を isinstance ガード | 2-5%/step(find_unused 走査・バケット copy・no-op allreduce 排除) |
+| ws>1 の DDP 改善 | `gradient_as_bucket_view=True`、BatchNorm 無しなら `broadcast_buffers=False` | 将来のマルチ GPU 用 |
+| **`--torch_compile` フラグ(オプトイン)** | 内側 Qwen2Model のみ in-place `compile(dynamic=True)`(外側 forward は Python ループ/.tolist() だらけで不適)。state_dict キー汚染なし | 8-15%/step 見込み、4090 で要実測。`optimize_ddp=False`, `cache_size_limit=16` |
+| TensorBoard 書き込み間引き | log_per_step を log_interval に同期 | ~1% |
+| `--onnx_path` ガード | 未指定時に env を立てない。moe_speech の stage 5 から削除(トークン事前計算済みなのに ORT CUDA セッションが VRAM 0.5-1.5GB 占有していた) | VRAM 解放 + 空トークンフィルタ復活 |
+
+moe_speech レシピ側:
 
 | 変更 | 内容 | 期待効果 |
 |---|---|---|
-| **`max_frames_in_batch: 2000 → 15000`** | 動的バッチの上限(mel 50fps 換算で 40 秒→300 秒/バッチ)。小型 GPU 向けのデフォルトを H100 80GB 向けに拡大。`accum_grad 2→1` | **最大の高速化要因**。ステップ数 ~1/7、GPU 稼働率向上。OOM したら 10000 へ、余裕があれば 30000 まで |
-| TF32 有効化 | `train.py` で `allow_tf32 = True`(matmul/cudnn) | autocast 外の fp32 演算(loss 等)が高速化 |
-| `max_epoch 200 → 10` / `save_per_step 2000` | FT 向けエポック数 + スポットインスタンス対策の途中保存 | 安全性 |
-| hf_transfer | `HF_HUB_ENABLE_HF_TRANSFER=1` で HF ダウンロード高速化 | ~200GB の DL が回線上限まで出る |
+| **波形フリー llm データパイプライン** | `parquet_opener` に columns プルーニング(audio_data 列 ≒ シャードの 99% を読まない)+ `filter_speech_token`/`sort_by_speech_token`/`dynamic_batch_llm`/`padding_llm`(すべて speech_token 長 = mel/2 基準)。wav デコード・リサンプル・mel/whisper fbank を全廃 | **ワーカー CPU ~30-60ms/サンプル → <1ms、エポックあたり parquet 読取 ~200GB → ~1-2GB**。ローダー律速なら 25-50% |
+| `max_frames_in_batch: 15000 → 30000` | H100 80GB 向け(単位は 50Hz mel フレーム、30000=600 秒/バッチ)。**24GB カード(4090)では 15000 に戻すこと** | ステップ数半減、15-30%/epoch |
+| `max_epoch 10 → 5` | 600h の FT は 3-5 エポックで CV loss が平坦化する想定。まだ下がっていれば `--checkpoint` 再開で延長 | 最大 50% |
+| `save_per_step 2000 → 1000` | バッチ倍増に合わせ壁時計での保存間隔を維持 | スポット耐性 |
+| `prefetch 100 → 8` | prefetch はワーカー毎: 100×8=800 バッチ(~10GB+ の pinned RAM)は無意味でページング事故のもと | 事故防止 |
+| dev parquet シャード数修正 | dev を `ceil(N/num_workers)` 発話/シャードで 8 シャード化。1 シャードだと DistributedSampler の複製で**全ワーカーが dev 全体を評価し CV が 8 倍**になっていた | CV 1/8 |
+| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | 動的バッチの形状ばらつきによる断片化対策 | 安定性 |
+| stage 2 バッチ ONNX トークン抽出 | `local/extract_speech_token_batch.py`(speech_tokenizer_v3.batch.onnx をバッチ 32 で実行、--verify_num でバッチ 1 との一致検証) | 前処理 1.5-4h → 0.5-1h |
 
-**見送り(オプション)**: `torch.compile`(動的バッチで再コンパイル多発のリスク)、flash-attn(§6.3)、GradScaler スキップ(効果微小)。
-前処理(speech token 抽出 ~40 万発話)が律速になる場合は `extract_speech_token.py` を話者シャードで複数プロセス並列化する(未実装、必要になったら)。
+**却下(検証で落ちたもの)**: flash-attn 2(§6.3)、find_unused_parameters=False 単独(DDP スキップに包含)、monitored_barrier/NCCL チューニング(ws=1 では <0.1%)、`.to(device, non_blocking=True)`(直後の .cpu()/.item() 同期で無意味)。
 
 ## 7. 参考リンク
 

@@ -83,6 +83,13 @@ class LabelSmoothingLoss(nn.Module):
         batch_size = x.size(0)
         x = x.view(-1, self.size)
         target = target.view(-1)
+        # smoothing 0 is plain cross entropy: use the fused kernel instead of the dense
+        # KLDiv machinery below, which materializes several (B*T, size) fp32 temporaries
+        # and forces a GPU->CPU sync via .item() in the middle of every forward
+        if self.smoothing == 0.0:
+            if self.normalize_length:
+                return torch.nn.functional.cross_entropy(x, target, ignore_index=self.padding_idx, reduction='mean')
+            return torch.nn.functional.cross_entropy(x, target, ignore_index=self.padding_idx, reduction='sum') / batch_size
         # use zeros_like instead of torch.no_grad() for true_dist,
         # since no_grad() can not be exported by JIT
         true_dist = torch.zeros_like(x)

@@ -80,6 +80,10 @@ def get_args():
                         action='store_true',
                         default=False,
                         help='Use automatic mixed precision training')
+    parser.add_argument('--torch_compile',
+                        action='store_true',
+                        default=False,
+                        help='torch.compile the inner Qwen2 transformer (Linux/CUDA only)')
     parser.add_argument('--dpo',
                         action='store_true',
                         default=False,
@@ -108,7 +112,10 @@ def get_args():
 @record
 def main():
     args = get_args()
-    os.environ['onnx_path'] = args.onnx_path
+    # NOTE only set when given, the env var flips online_feature=True in cosyvoice.utils.onnx
+    # which loads an unused ONNX CUDA session into training VRAM when tokens are precomputed
+    if args.onnx_path is not None:
+        os.environ['onnx_path'] = args.onnx_path
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
     # NOTE allow tf32 on ampere+ for the fp32 ops outside the autocast region
@@ -157,6 +164,19 @@ def main():
         else:
             logging.warning('checkpoint {} do not exsist!'.format(args.checkpoint))
 
+    # NOTE compile only the compute-dense Qwen2 backbone in place, the outer forward has
+    # python loops / .tolist() syncs that would just cause graph breaks. In-place
+    # nn.Module.compile keeps state_dict keys unchanged for save/load
+    if args.torch_compile:
+        backbone = getattr(getattr(getattr(model, 'llm', None), 'model', None), 'model', None)
+        if backbone is not None and torch.cuda.is_available():
+            torch._dynamo.config.cache_size_limit = 16
+            torch._dynamo.config.optimize_ddp = False
+            backbone.compile(dynamic=True)
+            logging.info('compiled inner Qwen2Model with torch.compile(dynamic=True)')
+        else:
+            logging.warning('--torch_compile ignored: model {} has no llm.model.model or no CUDA'.format(args.model))
+
     # Dispatch model from cpu to gpu
     model = wrap_cuda_model(args, model)
 
@@ -187,8 +207,11 @@ def main():
     executor = Executor(gan=gan, ref_model=ref_model, dpo_loss=dpo_loss)
     executor.step = start_step
 
-    # Init scaler, used for pytorch amp mixed precision training
-    scaler = torch.cuda.amp.GradScaler() if args.use_amp else None
+    # Init scaler, used for pytorch amp mixed precision training.
+    # NOTE loss scaling only makes sense for fp16, torch_ddp + --use_amp selects bf16
+    # (fp32 exponent range) where the scaler would just add two extra passes over the
+    # grads plus host syncs per step, so it stays None there
+    scaler = torch.amp.GradScaler('cuda') if (args.use_amp and configs['train_conf']['dtype'] == 'fp16') else None
     print('start step {} start epoch {}'.format(start_step, start_epoch))
 
     # Start training loop
