@@ -31,9 +31,12 @@ fi
 
 if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
   echo "Extract campplus speaker embedding, you will get spk2embedding.pt and utt2embedding.pt in data/$x dir"
+  # NOTE cpu campplus measured ~16 utts/s on a rented box (~5h for 290k utts), the cuda
+  # session pool does the same work in minutes on the training GPU that is idle here anyway
   for x in train dev; do
     python ../../../tools/extract_embedding.py --dir data/$x \
-      --onnx_path $pretrained_model_dir/campplus.onnx --num_thread 32 || exit 1
+      --onnx_path $pretrained_model_dir/campplus.onnx --num_thread 32 \
+      --provider cuda --num_sessions 4 || exit 1
   done
 fi
 
