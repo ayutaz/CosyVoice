@@ -48,6 +48,16 @@ from cosyvoice.utils.file_utils import audio_load
 # zero padding inside each batch stays small.
 SORT_CHUNK = 512
 
+# NOTE constructing torchaudio.transforms.Resample recomputes the sinc kernel and holds
+# the GIL, cache one transform per source rate instead of building one per utterance
+_resamplers = {}
+
+
+def get_resampler(orig_freq):
+    if orig_freq not in _resamplers:
+        _resamplers[orig_freq] = torchaudio.transforms.Resample(orig_freq=orig_freq, new_freq=16000)
+    return _resamplers[orig_freq]
+
 
 def read_wav_scp(dir):
     utt2wav = {}
@@ -72,7 +82,7 @@ def compute_mel(wav_path):
     """
     audio, sample_rate = audio_load(wav_path)
     if sample_rate != 16000:
-        audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)(audio)
+        audio = get_resampler(sample_rate)(audio)
     # Convert audio to mono
     if audio.shape[0] > 1:
         audio = audio.mean(dim=0, keepdim=True)
