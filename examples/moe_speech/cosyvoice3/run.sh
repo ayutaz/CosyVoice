@@ -17,33 +17,32 @@ if [ ${stage} -le -1 ] && [ ${stop_stage} -ge -1 ]; then
   hf download ayousanz/moe-speech-plus --repo-type dataset --local-dir ${data_dir}
 fi
 
+# NOTE every stage command must abort the pipeline on failure (|| exit 1): the
+# preprocessing tools swallow per-utterance exceptions, and a stage that half-failed
+# produces structurally valid but empty artifacts that only blow up much later
 if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
   echo "Data preparation: unzip + filter by speechMOS / ASR agreement, prepare wav.scp/text/utt2spk/spk2utt/instruct"
   # NOTE text is kept as raw kanji-mixed japanese, instruct is added like the CosyVoice3 libritts recipe
-  python local/prepare_data.py --src_dir ${data_dir} --des_dir data --num_workers 16
+  python local/prepare_data.py --src_dir ${data_dir} --des_dir data --num_workers 16 || exit 1
 fi
 
 if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
   echo "Extract campplus speaker embedding, you will get spk2embedding.pt and utt2embedding.pt in data/$x dir"
   for x in train dev; do
     python ../../../tools/extract_embedding.py --dir data/$x \
-      --onnx_path $pretrained_model_dir/campplus.onnx --num_thread 16
+      --onnx_path $pretrained_model_dir/campplus.onnx --num_thread 16 || exit 1
   done
 fi
 
 if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
   echo "Extract discrete speech token, you will get utt2speech_token.pt in data/$x dir"
+  # NOTE local/extract_speech_token_batch.py is ~4-8x faster but zero padding inside
+  # the batch onnx shifts 8-25% of the tokens for ~1/4 of the utterances (measured on
+  # synthetic data, 2026-07-07). Tokens are the llm training TARGETS, so the reference
+  # batch-1 tool stays the default until the batch path is validated on real speech.
   for x in train dev; do
-    if [ -f $pretrained_model_dir/speech_tokenizer_v3.batch.onnx ]; then
-      # NOTE batched GPU extraction, ~4-8x faster than the batch-1 tool for 600h;
-      # --verify_num cross-checks random utts against batch-1 and aborts on mismatch
-      python local/extract_speech_token_batch.py --dir data/$x \
-        --onnx_path $pretrained_model_dir/speech_tokenizer_v3.batch.onnx \
-        --num_thread 16 --batch_size 32 --verify_num 200
-    else
-      python ../../../tools/extract_speech_token.py --dir data/$x \
-        --onnx_path $pretrained_model_dir/speech_tokenizer_v3.onnx --num_thread 16
-    fi
+    python ../../../tools/extract_speech_token.py --dir data/$x \
+      --onnx_path $pretrained_model_dir/speech_tokenizer_v3.onnx --num_thread 16 || exit 1
   done
 fi
 
@@ -65,7 +64,7 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
     python ../../../tools/make_parquet_list.py --num_utts_per_parquet $utts_per_parquet \
       --num_processes 16 \
       --src_dir data/$x \
-      --des_dir data/$x/parquet
+      --des_dir data/$x/parquet || exit 1
   done
 fi
 

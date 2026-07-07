@@ -241,8 +241,10 @@ def cosyvoice_join(group_join, info_dict):
     if info_dict["batch_idx"] != 0:
         # we try to join all rank in both ddp and deepspeed mode, in case different rank has different lr
         try:
+            # NOTE ProcessGroup.options was removed in torch 2.11, use the --timeout arg
+            # (train.py merges args into train_conf) that created the group instead
             dist.monitored_barrier(group=group_join,
-                                   timeout=group_join.options._timeout)
+                                   timeout=datetime.timedelta(seconds=info_dict.get('timeout', 60)))
             return False
         except RuntimeError as e:
             logging.info("Detected uneven workload distribution: {}\n".format(e) +
