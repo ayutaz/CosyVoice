@@ -26,6 +26,7 @@ openai-whisper==20231117
 protobuf==4.25
 pyarrow==18.1.0
 pydantic==2.7.0
+pyopenjtalk==0.4.1
 pyworld==0.3.4
 rich==13.7.1
 soundfile==0.12.1

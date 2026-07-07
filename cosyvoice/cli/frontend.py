@@ -25,6 +25,7 @@ import re
 import inflect
 from cosyvoice.utils.file_utils import logging, load_wav
 from cosyvoice.utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
+from cosyvoice.utils.ja_frontend import should_ja_normalize, ja_normalize
 
 
 class CosyVoiceFrontEnd:
@@ -128,12 +129,24 @@ class CosyVoiceFrontEnd:
         if isinstance(text, Generator):
             logging.info('get tts_text generator, will skip text_normalize!')
             return [text]
+        # NOTE normalize japanese payload after <|endofprompt|> while keeping the prefix verbatim,
+        # every split segment keeps the prefix as each segment is synthesized separately
+        if text_frontend is True and '<|endofprompt|>' in text:
+            prefix, payload = text.split('<|endofprompt|>', 1)
+            prefix += '<|endofprompt|>'
+            if should_ja_normalize(payload):
+                if split is True:
+                    return [prefix + i for i in ja_normalize(payload)]
+                return prefix + ja_normalize(payload, split=False)
         # NOTE skip text_frontend when ssml symbol in text
         if '<|' in text and '|>' in text:
             text_frontend = False
         if text_frontend is False or text == '':
             return [text] if split is True else text
         text = text.strip()
+        # NOTE japanese must be converted to space-separated katakana, kanji-mixed text is misread otherwise
+        if should_ja_normalize(text):
+            return ja_normalize(text) if split is True else ja_normalize(text, split=False)
         if self.text_frontend == 'ttsfrd':
             texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]
             text = ''.join(texts)

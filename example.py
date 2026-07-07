@@ -95,9 +95,10 @@ def cosyvoice3_example():
                                                         './asset/zero_shot_prompt.wav', stream=False)):
         torchaudio.save('hotfix_{}.wav'.format(i), j['tts_speech'], cosyvoice.sample_rate)
 
-    # NOTE for Japanese usage, you must translate it to katakana.
+    # NOTE Japanese must be synthesized as space-separated katakana. Kanji-mixed text is converted
+    # automatically by cosyvoice/utils/ja_frontend.py (requires pyopenjtalk):
     # 歴史的世界においては、過去は単に過ぎ去ったものではない、プラトンのいう如く非有が有である。 -> レキシ テキ セカイ ニ オイ テ ワ、カコ ワ タンニ スギサッ タ モノ デ ワ ナイ、プラトン ノ イウ ゴトク ヒ ユー ガ ユー デ アル。
-    for i, j in enumerate(cosyvoice.inference_cross_lingual('You are a helpful assistant.<|endofprompt|>レキシ テキ セカイ ニ オイ テ ワ、カコ ワ タンニ スギサッ タ モノ デ ワ ナイ、プラトン ノ イウ ゴトク ヒ ユー ガ ユー デ アル。',
+    for i, j in enumerate(cosyvoice.inference_cross_lingual('You are a helpful assistant.<|endofprompt|>歴史的世界においては、過去は単に過ぎ去ったものではない、プラトンのいう如く非有が有である。',
                                                             './asset/zero_shot_prompt.wav', stream=False)):
         torchaudio.save('japanese_{}.wav'.format(i), j['tts_speech'], cosyvoice.sample_rate)
 
