@@ -87,7 +87,9 @@ if __name__ == "__main__":
     option = onnxruntime.SessionOptions()
     option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
     option.intra_op_num_threads = 1
-    providers = ["CUDAExecutionProvider"]
+    # NOTE utterance lengths vary, the default EXHAUSTIVE cudnn algo search re-benchmarks
+    # convolutions for every new input shape and slows batch-1 inference to a crawl
+    providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"})]
     session_pool = queue.Queue()
     for _ in range(max(args.num_sessions, 1)):
         session_pool.put(onnxruntime.InferenceSession(args.onnx_path, sess_options=option, providers=providers))

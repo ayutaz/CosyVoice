@@ -92,7 +92,12 @@ if __name__ == "__main__":
     option = onnxruntime.SessionOptions()
     option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
     option.intra_op_num_threads = 1
-    providers = ["CUDAExecutionProvider"] if args.provider == "cuda" else ["CPUExecutionProvider"]
+    # NOTE utterance lengths vary, the default EXHAUSTIVE cudnn algo search re-benchmarks
+    # convolutions for every new input shape and slows batch-1 inference to a crawl
+    if args.provider == "cuda":
+        providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"})]
+    else:
+        providers = ["CPUExecutionProvider"]
     session_pool = queue.Queue()
     # NOTE cpu sessions run concurrently from many threads already, extra sessions only
     # pay off with the cuda provider where each session owns its own stream
