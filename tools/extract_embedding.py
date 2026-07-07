@@ -20,9 +20,11 @@ import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 from tqdm import tqdm
 
+from cosyvoice.utils.file_utils import audio_load
+
 
 def single_job(utt):
-    audio, sample_rate = torchaudio.load(utt2wav[utt])
+    audio, sample_rate = audio_load(utt2wav[utt])
     if sample_rate != 16000:
         audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)(audio)
     feat = kaldi.fbank(audio,

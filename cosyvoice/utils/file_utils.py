@@ -16,12 +16,32 @@
 
 import os
 import json
+import soundfile as sf
 import torch
 import torchaudio
 import logging
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(levelname)s %(message)s')
+
+
+def audio_load(file):
+    """Decode audio into (speech [C, T] float32, sample_rate).
+
+    Drop-in replacement for torchaudio.load: torchaudio 2.9+ delegates decoding to
+    the optional torchcodec package (which needs FFmpeg at runtime), while soundfile
+    keeps wav/flac/ogg decoding self-contained on every platform. Accepts a path or
+    a file-like object such as BytesIO.
+    """
+    data, sample_rate = sf.read(file, dtype='float32', always_2d=True)
+    return torch.from_numpy(data.T).contiguous(), sample_rate
+
+
+def audio_save(file, speech, sample_rate):
+    """Write a [C, T] or [T] float tensor as audio, replacement for torchaudio.save."""
+    if speech.dim() == 1:
+        speech = speech.unsqueeze(0)
+    sf.write(file, speech.transpose(0, 1).detach().cpu().numpy(), sample_rate)
 
 
 def read_lists(list_file):
@@ -42,7 +62,7 @@ def read_json_lists(list_file):
 
 
 def load_wav(wav, target_sr, min_sr=16000):
-    speech, sample_rate = torchaudio.load(wav, backend='soundfile')
+    speech, sample_rate = audio_load(wav)
     speech = speech.mean(dim=0, keepdim=True)
     if sample_rate != target_sr:
         assert sample_rate >= min_sr, 'wav sample rate {} must be greater than {}'.format(sample_rate, target_sr)

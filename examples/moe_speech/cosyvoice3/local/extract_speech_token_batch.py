@@ -41,6 +41,8 @@ import onnxruntime
 import torchaudio
 import whisper
 
+from cosyvoice.utils.file_utils import audio_load
+
 # Size of the buffer that is sorted by mel length before being sliced into
 # batches. Sorting a chunk keeps utterances of similar length together so the
 # zero padding inside each batch stays small.
@@ -68,7 +70,7 @@ def compute_mel(wav_path):
     normalizes against the tensor's global max; padding audio beforehand would
     corrupt that normalization.
     """
-    audio, sample_rate = torchaudio.load(wav_path, backend='soundfile')
+    audio, sample_rate = audio_load(wav_path)
     if sample_rate != 16000:
         audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)(audio)
     # Convert audio to mono

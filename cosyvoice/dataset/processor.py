@@ -23,6 +23,7 @@ import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
 import pyworld as pw
+from cosyvoice.utils.file_utils import audio_load
 from cosyvoice.utils.onnx import embedding_extractor, online_feature
 
 AUDIO_FORMAT_SETS = {'flac', 'mp3', 'm4a', 'ogg', 'opus', 'wav', 'wma'}
@@ -83,7 +84,7 @@ def filter(data,
             Iterable[{key, wav, label, sample_rate}]
     """
     for sample in data:
-        sample['speech'], sample['sample_rate'] = torchaudio.load(BytesIO(sample['audio_data']))
+        sample['speech'], sample['sample_rate'] = audio_load(BytesIO(sample['audio_data']))
         sample['speech'] = sample['speech'].mean(dim=0, keepdim=True)
         del sample['audio_data']
         # sample['wav'] is torch.Tensor, we have 100 frames every second

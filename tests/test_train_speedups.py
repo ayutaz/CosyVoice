@@ -100,6 +100,42 @@ class TestLabelSmoothingFastPath:
         assert torch.isfinite(loss)
 
 
+class TestAudioLoad:
+    """audio_load/audio_save replace torchaudio I/O, which requires the optional
+    torchcodec package on torchaudio 2.9+."""
+
+    def test_round_trip_path(self, tmp_path):
+        from cosyvoice.utils.file_utils import audio_load, audio_save
+        sr = 44100
+        speech = torch.sin(2 * 3.14159 * 220 * torch.arange(sr) / sr).unsqueeze(0) * 0.5
+        path = str(tmp_path / 'a.wav')
+        audio_save(path, speech, sr)
+        loaded, loaded_sr = audio_load(path)
+        assert loaded_sr == sr
+        assert loaded.shape == speech.shape
+        assert loaded.dtype == torch.float32
+        assert torch.allclose(loaded, speech, atol=1e-3)
+
+    def test_bytesio_like_parquet_audio_data(self, tmp_path):
+        from io import BytesIO
+        from cosyvoice.utils.file_utils import audio_load, audio_save
+        path = str(tmp_path / 'b.wav')
+        audio_save(path, torch.zeros(1, 1600), 16000)
+        with open(path, 'rb') as f:
+            raw = f.read()
+        loaded, sr = audio_load(BytesIO(raw))
+        assert sr == 16000
+        assert loaded.shape == (1, 1600)
+
+    def test_load_wav_resample(self, tmp_path):
+        from cosyvoice.utils.file_utils import audio_save, load_wav
+        path = str(tmp_path / 'c.wav')
+        audio_save(path, torch.zeros(2, 44100), 44100)  # stereo in
+        speech = load_wav(path, 24000)
+        assert speech.shape[0] == 1  # mono mixdown
+        assert speech.shape[1] == 24000
+
+
 class TestLlmDataPipeline:
     """waveform-free llm processors: filter/sort/batch/padding keyed on speech tokens."""
 
