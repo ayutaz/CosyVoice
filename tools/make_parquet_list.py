@@ -50,9 +50,9 @@ def job(utt_list, parquet_file, utt2parquet_file, spk2parquet_file):
         df['reject_speech_token'] = [utt2reject_speech_token.get(utt, None) for utt in utt_list]
     df.to_parquet(parquet_file)
     with open(utt2parquet_file, 'w') as f:
-        json.dump({k: parquet_file for k in utt_list}, f, ensure_ascii=False, indent=2)
+        json.dump(dict.fromkeys(utt_list, parquet_file), f, ensure_ascii=False, indent=2)
     with open(spk2parquet_file, 'w') as f:
-        json.dump({k: parquet_file for k in list(set(spk_list))}, f, ensure_ascii=False, indent=2)
+        json.dump(dict.fromkeys(list(set(spk_list)), parquet_file), f, ensure_ascii=False, indent=2)
     logging.info('spend time {}'.format(time.time() - start_time))
 
 

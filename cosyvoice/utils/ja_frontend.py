@@ -51,8 +51,8 @@ def should_ja_normalize(text):
 def ja_text_to_katakana(text):
     try:
         import pyopenjtalk
-    except ImportError:
-        raise ImportError('pyopenjtalk is required for japanese text normalization, install with `pip install pyopenjtalk`')
+    except ImportError as e:
+        raise ImportError('pyopenjtalk is required for japanese text normalization, install with `uv add pyopenjtalk-plus`') from e
     pieces = []
     for feat in pyopenjtalk.run_frontend(text):
         surface, pron, pos = feat['string'], feat['pron'], feat['pos']

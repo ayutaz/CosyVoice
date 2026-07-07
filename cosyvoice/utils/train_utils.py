@@ -111,6 +111,8 @@ def wrap_cuda_model(args, model):
             logging.info('WORLD_SIZE=1, skipping the DDP wrapper and its per-step overhead')
     else:
         if int(os.environ.get('RANK', 0)) == 0:
+            # NOTE deepspeed is an optional dependency, import lazily on the deepspeed path
+            from deepspeed.runtime.zero.stage_1_and_2 import estimate_zero2_model_states_mem_needs_all_live
             logging.info("Estimating model states memory needs (zero2)...")
             estimate_zero2_model_states_mem_needs_all_live(
                 model,

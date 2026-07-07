@@ -211,9 +211,9 @@ class TestLlmDataPipeline:
         assert total == 6
         for b in batches:
             assert 'audio_data' not in b
-            assert set(['utts', 'text', 'text_token', 'text_token_len', 'speech_token',
-                        'speech_token_len', 'instruct_token', 'instruct_token_len',
-                        'utt_embedding', 'spk_embedding', 'embedding']) <= set(b.keys())
+            assert {'utts', 'text', 'text_token', 'text_token_len', 'speech_token',
+                    'speech_token_len', 'instruct_token', 'instruct_token_len',
+                    'utt_embedding', 'spk_embedding', 'embedding'} <= set(b.keys())
             assert b['speech_token'].dtype == torch.int64
             # embeddings normalized
             assert torch.allclose(b['utt_embedding'].norm(dim=1), torch.ones(len(b['utts'])), atol=1e-5)

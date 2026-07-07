@@ -62,7 +62,7 @@ class TritonPythonModel:
         mels = []
 
         # Process each request in batch
-        for req_idx, request in enumerate(requests):
+        for _req_idx, request in enumerate(requests):
             # Extract input tensors
             wav_array = pb_utils.get_input_tensor_by_name(
                 request, "reference_wav").as_numpy()

@@ -51,6 +51,7 @@ dependencies = [
 dev = [
     "hf-transfer>=0.1.8",
     "pytest>=9.1.1",
+    "ruff>=0.15.20",
 ]
 
 # NOTE transformers is pinned to 4.x on purpose, transformers 5.x changes the Qwen2 numerics
@@ -79,3 +80,36 @@ openai-whisper = ["setuptools<81"]
 name = "tensorrt-cu12"
 version = "10.13.3.9"
 requires-dist = ["tensorrt-cu12-bindings==10.13.3.9", "tensorrt-cu12-libs==10.13.3.9"]
+
+# NOTE mirrors the upstream flake8 CI (.github/workflows/lint.yml): line length 180 and
+# the same ignore list, so `uv run ruff check .` passing implies upstream lint passes
+# (minus W503/W504, which ruff never implemented)
+[tool.ruff]
+line-length = 180
+extend-exclude = [
+    "third_party",
+    "runtime/python/grpc/cosyvoice_pb2*.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "C4"]
+ignore = [
+    "B006", # mutable default argument, upstream style
+    "B008", # function call in default argument, upstream style
+    "B905", # zip without strict=
+    "C408", # dict()/list() calls instead of literals
+    "E402", # module import not at top, needed for sys.path hacks
+    "E731", # lambda assignment
+    "E741", # ambiguous variable names, upstream uses l/i
+    "F401", # unused imports, upstream re-exports
+    "F403", # star imports
+    "F405", # possibly undefined from star import
+    "F722", # forward annotation syntax
+    "F841", # unused local variables
+]
+
+# NOTE ruff measures E501 in display width (CJK chars count as 2), the demo scripts
+# carry long Chinese/Japanese sample sentences that are fine at code-point length
+[tool.ruff.lint.per-file-ignores]
+"example.py" = ["E501"]
+"vllm_example.py" = ["E501"]

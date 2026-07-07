@@ -175,7 +175,7 @@ def main():
         spk2utt[utt2spk[utt]].append(utt)
     rng = random.Random(args.seed)
     train_utts, dev_utts = [], []
-    for spk, spk_utts in sorted(spk2utt.items()):
+    for _spk, spk_utts in sorted(spk2utt.items()):
         spk_utts = sorted(spk_utts)
         rng.shuffle(spk_utts)
         n_dev = min(args.dev_utts_per_spk, max(len(spk_utts) - 1, 0))

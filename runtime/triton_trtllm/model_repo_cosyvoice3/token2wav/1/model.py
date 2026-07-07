@@ -133,7 +133,7 @@ class TritonPythonModel:
 
     def execute(self, requests):
         responses = []
-        for req_idx, request in enumerate(requests):
+        for _req_idx, request in enumerate(requests):
             target_speech_tokens = pb_utils.get_input_tensor_by_name(
                 request, "target_speech_tokens")
             target_speech_tokens = torch.utils.dlpack.from_dlpack(

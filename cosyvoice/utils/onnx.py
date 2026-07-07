@@ -1,5 +1,6 @@
 import onnxruntime
-import torch, random
+import torch
+import random
 import os
 import torchaudio.compliance.kaldi as kaldi
 

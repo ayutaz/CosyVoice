@@ -42,7 +42,7 @@ def main():
             f.write('{} {}\n'.format(k, ' '.join(v)))
     if args.instruct != '':
         with open('{}/instruct'.format(args.des_dir), 'w') as f:
-            for k, v in utt2text.items():
+            for k in utt2text:
                 f.write('{} {}\n'.format(k, args.instruct))
     return
 

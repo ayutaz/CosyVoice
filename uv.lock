@@ -334,6 +334,7 @@ dependencies = [
 dev = [
     { name = "hf-transfer" },
     { name = "pytest" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -387,6 +388,7 @@ requires-dist = [
 dev = [
     { name = "hf-transfer", specifier = ">=0.1.8" },
     { name = "pytest", specifier = ">=9.1.1" },
+    { name = "ruff", specifier = ">=0.15.20" },
 ]
 
 [[package]]
