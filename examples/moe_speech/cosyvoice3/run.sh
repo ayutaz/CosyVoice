@@ -22,8 +22,11 @@ fi
 # produces structurally valid but empty artifacts that only blow up much later
 if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
   echo "Data preparation: unzip + filter by speechMOS / ASR agreement, prepare wav.scp/text/utt2spk/spk2utt/instruct"
-  # NOTE text is kept as raw kanji-mixed japanese, instruct is added like the CosyVoice3 libritts recipe
-  python local/prepare_data.py --src_dir ${data_dir} --des_dir data --num_workers 16 || exit 1
+  # NOTE text is kept as raw kanji-mixed japanese, instruct is added like the CosyVoice3 libritts recipe.
+  # mos_threshold 1.5: speechMOS punishes acted speech (whisper/shout), the measured
+  # distribution of this dataset is median 2.18 / p25 1.76, the default 2.5 would drop 74%.
+  # Label quality is guarded by the cross-CER filter (~3% rejects), MOS only trims the tail
+  python local/prepare_data.py --src_dir ${data_dir} --des_dir data --num_workers 16 --mos_threshold 1.5 || exit 1
 fi
 
 if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
