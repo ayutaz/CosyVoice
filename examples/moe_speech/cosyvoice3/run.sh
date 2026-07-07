@@ -12,6 +12,8 @@ pretrained_model_dir=../../../pretrained_models/Fun-CosyVoice3-0.5B
 
 if [ ${stage} -le -1 ] && [ ${stop_stage} -ge -1 ]; then
   echo "Data Download (~200GB, be mindful of disk space)"
+  # NOTE hf_transfer saturates fast pipes, it is in the dev dependency group
+  export HF_HUB_ENABLE_HF_TRANSFER=1
   hf download ayousanz/moe-speech-plus --repo-type dataset --local-dir ${data_dir}
 fi
 

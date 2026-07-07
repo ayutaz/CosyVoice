@@ -230,7 +230,49 @@ CUDA ドライバは 12.5+ のホストで torch 2.3.1 (cu121) がそのまま�
 - `.env`(`VAST_API_KEY`)は .gitignore 追加済み。**Claude Code は .env を読み書きできない**(セキュリティ設定)ため、作成・編集はユーザーが行う。
 - HF は `hf` CLI でログイン済み(gated データセットのダウンロード可)。
 
-## 6. 参考リンク
+## 6. 学習高速化・バージョンアップ調査 (2026-07-07)
+
+### 6.1 バージョンアップマトリクス(実施済み)
+
+| 項目 | 旧 | 新 | 根拠・制約 |
+|---|---|---|---|
+| Python | 3.10 | **3.12** | pyopenjtalk 0.4.1 が cp312 ホイール無しでブロックしていたが、**pyopenjtalk-plus**(VOICEVOX 系フォーク、cp310〜cp314 全ホイール、import 名は同じ `pyopenjtalk`)へ切替して解禁。3.13 は他依存の残リスクがあり見送り |
+| torch | 2.3.1+cu121 | **2.11.0+cu128** | 最新 stable は 2.12.1 だが **torchaudio の最新が 2.11.0** のため 2.11 系が実質上限。cu128 はドライバ CUDA 12.x 全体で動く(vast.ai の H100 ホストは 12.5〜13.2)。cu130 は 2.12 系のデフォルトで今回は不要 |
+| transformers | 4.51.3 | **4.51.3 据え置き** | **transformers 5.x は Qwen2 実装変更(attention interface / RMSNorm / KV cache)の数値ドリフトで CV2/CV3 の自己回帰推論が雑音化**([issue #1886](https://github.com/FunAudioLLM/CosyVoice/issues/1886)、未修正のまま stale close)。5.x は禁止、4.x 内のバンプも学習後の推論検証とセットでのみ行う |
+| onnxruntime(-gpu) | 1.18.0 (Azure feed) | **1.22.0 (PyPI)** | 1.19 以降 PyPI 本体が CUDA12 ビルドになり Azure フィード不要に。1.27 は CUDA13 専用 + py3.11+ でホストドライバ制約が増えるため見送り |
+| pyworld | 0.3.4 | 0.3.5 | cp312/313 ホイール対応 |
+| grpcio(-tools) | 1.57.0 | 1.62.3 | cp312 ホイール。1.67+ は protobuf>=5 要求で protobuf==4.25 ピンと衝突するため 1.62 系 |
+| matplotlib | 3.7.5 | 3.9.4 | cp312 ホイール |
+| onnx | 1.16.0 | 1.17.0 | cp312 ホイール |
+
+- Matcha-TTS (third_party) は `torch.stft(..., return_complex=True)` を使用しており新 torch で問題なし(確認済み)。
+- `torch.load` は torch 2.6 から `weights_only=True` がデフォルト。学習チェックポイントはテンソル+プリミティブのみで通る想定だが、vast.ai 上での初回実行時に要確認。
+- `torch.cuda.amp.*` は deprecated 警告が出るが 2.11 でも動作する。
+
+### 6.2 精度設定 (bf16 / fp16) — 調査結果
+
+- **`--use_amp` + torch_ddp で既に bf16 になっている**(`train_utils.py:74`: `dtype = 'bf16' if args.use_amp else 'fp32'`)。run.sh は `--use_amp` 指定済みなので追加作業なし。
+- H100 では bf16 が正解(fp16 と同速で、loss scale の不安定性がない)。fp16 は deepspeed エンジン + ds_config 経由でのみ選択される。
+- GradScaler は bf16 では本来不要だが実装上共用されており無害(微小オーバーヘッドのみ)。
+
+### 6.3 attention — 調査結果
+
+- `Qwen2Encoder` は `Qwen2ForCausalLM.from_pretrained()` をデフォルト設定で呼んでおり、transformers 4.51 では **SDPA (scaled_dot_product_attention) が既定で有効**。H100 では SDPA が flash/cuDNN バックエンドに自動ディスパッチされるため、追加設定なしで高速。
+- `flash_attention_2`(flash-attn パッケージ)への切替は +10〜20% 程度の見込みだが、本ワークロードは系列が短く(≤15 秒 ≒ 375 speech token)、ホイールの torch バージョン整合の手間に見合わないため見送り(将来の 8,000h 学習では再検討)。
+
+### 6.4 学習スループットの実装済み変更
+
+| 変更 | 内容 | 期待効果 |
+|---|---|---|
+| **`max_frames_in_batch: 2000 → 15000`** | 動的バッチの上限(mel 50fps 換算で 40 秒→300 秒/バッチ)。小型 GPU 向けのデフォルトを H100 80GB 向けに拡大。`accum_grad 2→1` | **最大の高速化要因**。ステップ数 ~1/7、GPU 稼働率向上。OOM したら 10000 へ、余裕があれば 30000 まで |
+| TF32 有効化 | `train.py` で `allow_tf32 = True`(matmul/cudnn) | autocast 外の fp32 演算(loss 等)が高速化 |
+| `max_epoch 200 → 10` / `save_per_step 2000` | FT 向けエポック数 + スポットインスタンス対策の途中保存 | 安全性 |
+| hf_transfer | `HF_HUB_ENABLE_HF_TRANSFER=1` で HF ダウンロード高速化 | ~200GB の DL が回線上限まで出る |
+
+**見送り(オプション)**: `torch.compile`(動的バッチで再コンパイル多発のリスク)、flash-attn(§6.3)、GradScaler スキップ(効果微小)。
+前処理(speech token 抽出 ~40 万発話)が律速になる場合は `extract_speech_token.py` を話者シャードで複数プロセス並列化する(未実装、必要になったら)。
+
+## 7. 参考リンク
 
 - [issue #1705: CV3 学習の語彙サイズ不一致](https://github.com/FunAudioLLM/CosyVoice/issues/1705)
 - [issue #303: 日本語誤読](https://github.com/FunAudioLLM/CosyVoice/issues/303)
