@@ -56,15 +56,18 @@ def main():
                 loss = float(dic_yaml['loss_dict']['loss'])
                 epoch = int(dic_yaml['epoch'])
                 step = int(dic_yaml['step'])
-                tag = dic_yaml['tag']
-                val_scores += [[epoch, step, loss, tag]]
+                val_scores += [[epoch, step, loss, y]]
         sorted_val_scores = sorted(val_scores,
                                    key=lambda x: x[2],
                                    reverse=False)
-        print("best val (epoch, step, loss, tag) = " +
+        print("best val (epoch, step, loss, yaml) = " +
               str(sorted_val_scores[:args.num]))
+        # NOTE each yaml has a checkpoint of the same basename: epoch_X_whole.yaml ->
+        # epoch_X_whole.pt, epoch_X_step_Y.yaml -> epoch_X_step_Y.pt. Deriving the path
+        # from the epoch number alone would collapse step checkpoints onto the epoch-end
+        # file and silently average duplicates
         path_list = [
-            args.src_path + '/epoch_{}_whole.pt'.format(score[0])
+            score[3][:-len('.yaml')] + '.pt'
             for score in sorted_val_scores[:args.num]
         ]
     print(path_list)
