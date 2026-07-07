@@ -25,16 +25,21 @@ import torch
 
 def job(utt_list, parquet_file, utt2parquet_file, spk2parquet_file):
     start_time = time.time()
-    data_list = []
-    for utt in tqdm(utt_list):
-        data = open(utt2wav[utt], 'rb').read()
-        data_list.append(data)
 
     # 保存到parquet,utt2parquet_file,spk2parquet_file
     spk_list = [utt2spk[utt] for utt in utt_list]
     df = pd.DataFrame()
     df['utt'] = utt_list
-    df['audio_data'] = data_list
+    # NOTE llm training with precomputed speech tokens never reads the raw audio bytes
+    # (the recipe pipeline prunes the column anyway), --exclude_audio_data skips reading
+    # and storing them, which is most of the parquet IO. flow/hifigan training NEEDS the
+    # audio, rebuild the parquet without the flag for those
+    if not args.exclude_audio_data:
+        data_list = []
+        for utt in tqdm(utt_list):
+            data = open(utt2wav[utt], 'rb').read()
+            data_list.append(data)
+        df['audio_data'] = data_list
     df['wav'] = [utt2wav[utt] for utt in utt_list]
     df['text'] = [utt2text[utt] for utt in utt_list]
     df['spk'] = spk_list
@@ -74,6 +79,10 @@ if __name__ == "__main__":
                         action='store_true',
                         default=False,
                         help='Use Direct Preference Optimization')
+    parser.add_argument('--exclude_audio_data',
+                        action='store_true',
+                        default=False,
+                        help='do not store raw audio bytes, for llm-only training with precomputed speech tokens')
     args = parser.parse_args()
 
     # NOTE use utf-8 + maxsplit so japanese text and paths survive on any locale

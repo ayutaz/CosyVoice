@@ -71,6 +71,33 @@ def test_filter_utt_tolerates_missing_metrics():
     assert reason is None and text == 'こんにちは。'
 
 
+def test_scan_chunk_filters_and_reads_meta(tmp_path):
+    import json
+    wavs = []
+    metas = [
+        ('spk1_000', dict(META_OK)),
+        ('spk1_001', dict(META_OK, speechMOS=1.0)),  # rejected: mos
+        ('spk2_000', dict(META_OK)),
+    ]
+    for utt, meta in metas:
+        wav = tmp_path / '{}.wav'.format(utt)
+        wav.write_bytes(b'')
+        with open(str(tmp_path / '{}.json'.format(utt)), 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False)
+        wavs.append(str(wav))
+    # one wav without metadata
+    orphan = tmp_path / 'spk3_000.wav'
+    orphan.write_bytes(b'')
+    wavs.append(str(orphan))
+
+    kept, rejects = prepare.scan_chunk(wavs, 'parakeet', 2.5, 0.2, 1.0, 29.0)
+    kept_utts = sorted(w.split('\\')[-1].split('/')[-1] for w, _ in kept)
+    assert kept_utts == ['spk1_000.wav', 'spk2_000.wav']
+    assert rejects['mos'] == 1
+    assert rejects['no_meta'] == 1
+    assert all(text == META_OK['parakeet_jp_transcription'] for _, text in kept)
+
+
 def test_write_kaldi_dir(tmp_path):
     utts = ['aaa11111_000', 'aaa11111_001', 'bbb22222_000']
     utt2wav = {u: '/data/{}.wav'.format(u) for u in utts}

@@ -136,6 +136,58 @@ class TestAudioLoad:
         assert speech.shape[1] == 24000
 
 
+class TestMakeParquetExcludeAudio:
+    @staticmethod
+    def _load_module():
+        import importlib.util
+        path = os.path.join(os.path.dirname(__file__), '..', 'tools', 'make_parquet_list.py')
+        spec = importlib.util.spec_from_file_location('make_parquet_list', path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # argparse/globals live under the __main__ guard
+        return mod
+
+    def test_exclude_audio_data_flag(self, tmp_path):
+        from types import SimpleNamespace
+        mod = self._load_module()
+        utts = ['spk1_000', 'spk1_001']
+        # wav paths are never opened when audio bytes are excluded
+        mod.utt2wav = {u: '/nonexistent/{}.wav'.format(u) for u in utts}
+        mod.utt2text = dict.fromkeys(utts, 'こんにちは 世界。')
+        mod.utt2spk = dict.fromkeys(utts, 'spk1')
+        mod.utt2embedding = {u: [0.1] * 8 for u in utts}
+        mod.spk2embedding = {'spk1': [0.2] * 8}
+        mod.utt2speech_token = {u: list(range(40)) for u in utts}
+        mod.utt2instruct = dict.fromkeys(utts, 'You are a helpful assistant.<|endofprompt|>')
+        mod.args = SimpleNamespace(dpo=False, exclude_audio_data=True)
+
+        parquet_file = str(tmp_path / 'parquet_000000000.tar')
+        mod.job(utts, parquet_file, str(tmp_path / 'utt2parquet.json'), str(tmp_path / 'spk2parquet.json'))
+
+        import pandas as pd
+        df = pd.read_parquet(parquet_file)
+        assert 'audio_data' not in df.columns
+        assert {'utt', 'wav', 'text', 'spk', 'utt_embedding', 'spk_embedding', 'speech_token', 'instruct'} <= set(df.columns)
+        assert len(df) == 2
+
+    def test_audio_data_kept_by_default(self, tmp_path):
+        from types import SimpleNamespace
+        mod = self._load_module()
+        wav = tmp_path / 'a.wav'
+        wav.write_bytes(b'RIFFxxxx')
+        mod.utt2wav = {'spk1_000': str(wav)}
+        mod.utt2text = {'spk1_000': 'テスト。'}
+        mod.utt2spk = {'spk1_000': 'spk1'}
+        mod.utt2embedding = mod.spk2embedding = mod.utt2speech_token = mod.utt2instruct = None
+        mod.args = SimpleNamespace(dpo=False, exclude_audio_data=False)
+
+        parquet_file = str(tmp_path / 'parquet_000000000.tar')
+        mod.job(['spk1_000'], parquet_file, str(tmp_path / 'u.json'), str(tmp_path / 's.json'))
+
+        import pandas as pd
+        df = pd.read_parquet(parquet_file)
+        assert df['audio_data'][0] == b'RIFFxxxx'
+
+
 class TestLlmDataPipeline:
     """waveform-free llm processors: filter/sort/batch/padding keyed on speech tokens."""
 

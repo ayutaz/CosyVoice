@@ -287,7 +287,19 @@ moe_speech レシピ側:
 | `prefetch 100 → 8` | prefetch はワーカー毎: 100×8=800 バッチ(~10GB+ の pinned RAM)は無意味でページング事故のもと | 事故防止 |
 | dev parquet シャード数修正 | dev を `ceil(N/num_workers)` 発話/シャードで 8 シャード化。1 シャードだと DistributedSampler の複製で**全ワーカーが dev 全体を評価し CV が 8 倍**になっていた | CV 1/8 |
 | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | 動的バッチの形状ばらつきによる断片化対策 | 安定性 |
-| stage 2 バッチ ONNX トークン抽出 | `local/extract_speech_token_batch.py`(speech_tokenizer_v3.batch.onnx をバッチ 32 で実行、--verify_num でバッチ 1 との一致検証) | 前処理 1.5-4h → 0.5-1h |
+
+前処理の高速化 (2026-07-07 追加、学習よりも前処理が費用の過半を占めるため):
+
+| 変更 | 内容 | 期待効果 |
+|---|---|---|
+| **stage 2 セッションプール** | `tools/extract_speech_token.py --num_sessions N`: N 個の ONNX セッション(各自の CUDA ストリーム)をキューで貸し出し、**バッチ 1 のまま発話間並列**。単一セッション×16 スレッドでは GPU 上で直列化していた。パディング無しなので**数値は参照実装と同一** | stage 2 の 2-5h → 推定 0.7-1.5h (2-4x) |
+| Resample キャッシュ | stage 1/2 で `torchaudio.transforms.Resample` を発話ごとに構築していた(sinc カーネルを 30 万回再計算)→ orig_freq 別にキャッシュ | CPU 側短縮 |
+| stage 0 メタスキャン並列化 | `prepare_data.py` の 30 万件 JSON 読み+フィルタ直列ループを ProcessPool 化 (`scan_chunk`) | 10-20 分 → 2-3 分 |
+| **stage 3 `--exclude_audio_data`** | `make_parquet_list.py` が wav 生バイト(~200GB、llm 学習は読まない)を parquet に書いていた → フラグでスキップ。**flow/hifigan 学習時はフラグ無しで parquet 再生成が必要** | ~40 分 → ~2 分 + ディスク 200GB 節約 |
+| stage 1 CUDA オプション | `extract_embedding.py --provider cuda --num_sessions N`(既定は cpu のまま)、スレッド数 16→32 | コア数少ないホスト向け |
+| stage 2 バッチ ONNX 抽出 (opt-in) | `local/extract_speech_token_batch.py`。**バッチ内ゼロパディングでトークンがずれるため既定から外した**(§6.5)。実データで一致検証が取れれば再昇格 | (保留) |
+
+前処理見積もりの更新: stage 2 が 0.7-1.5h に縮み、stage 0/3 が数分になるため、**H100 での前処理合計は ~4-8h → ~2-3.5h、総費用見込みは $20-35 → $13-22** に低下。
 
 **却下(検証で落ちたもの)**: flash-attn 2(§6.3)、find_unused_parameters=False 単独(DDP スキップに包含)、monitored_barrier/NCCL チューニング(ws=1 では <0.1%)、`.to(device, non_blocking=True)`(直後の .cpu()/.item() 同期で無意味)。
 

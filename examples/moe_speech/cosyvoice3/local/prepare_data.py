@@ -108,6 +108,28 @@ def extract_zip(zip_path, extract_dir):
     return zip_path, False
 
 
+def scan_chunk(wavs, transcription, mos_threshold, max_cross_cer, min_duration, max_duration):
+    """Read the metadata json next to each wav and apply filter_utt, for one chunk of the
+    wav list. Runs in a worker process, the json decode of hundreds of thousands of small
+    files dominates the scan when done serially."""
+    kept, rejects = [], collections.Counter()
+    for wav in wavs:
+        meta_path = find_meta_path(wav)
+        if meta_path is None:
+            rejects['no_meta'] += 1
+            continue
+        with open(meta_path, encoding='utf-8') as f:
+            meta = json.load(f)
+        text, reason = filter_utt(meta, transcription=transcription, mos_threshold=mos_threshold,
+                                  max_cross_cer=max_cross_cer, min_duration=min_duration,
+                                  max_duration=max_duration)
+        if text is None:
+            rejects[reason] += 1
+            continue
+        kept.append((wav, text))
+    return kept, rejects
+
+
 def write_kaldi_dir(des_dir, utts, utt2wav, utt2text, utt2spk, instruct):
     os.makedirs(des_dir, exist_ok=True)
     spk2utt = collections.defaultdict(list)
@@ -150,23 +172,20 @@ def main():
 
     utt2wav, utt2text, utt2spk = {}, {}, {}
     rejects = collections.Counter()
-    for wav in tqdm(wavs):
-        meta_path = find_meta_path(wav)
-        if meta_path is None:
-            rejects['no_meta'] += 1
-            continue
-        with open(meta_path, encoding='utf-8') as f:
-            meta = json.load(f)
-        text, reason = filter_utt(meta, transcription=args.transcription, mos_threshold=args.mos_threshold,
-                                  max_cross_cer=args.max_cross_cer, min_duration=args.min_duration,
-                                  max_duration=args.max_duration)
-        if text is None:
-            rejects[reason] += 1
-            continue
-        utt = os.path.basename(wav).replace('.wav', '')
-        utt2wav[utt] = os.path.abspath(wav)
-        utt2text[utt] = text
-        utt2spk[utt] = utt.split('_')[0]
+    chunk_size = max((len(wavs) + args.num_workers - 1) // max(args.num_workers, 1), 1)
+    chunks = [wavs[i: i + chunk_size] for i in range(0, len(wavs), chunk_size)]
+    with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+        tasks = [executor.submit(scan_chunk, chunk, args.transcription, args.mos_threshold,
+                                 args.max_cross_cer, args.min_duration, args.max_duration)
+                 for chunk in chunks]
+        for task in tqdm(as_completed(tasks), total=len(tasks)):
+            kept, chunk_rejects = task.result()
+            rejects.update(chunk_rejects)
+            for wav, text in kept:
+                utt = os.path.basename(wav).replace('.wav', '')
+                utt2wav[utt] = os.path.abspath(wav)
+                utt2text[utt] = text
+                utt2spk[utt] = utt.split('_')[0]
     logger.info('kept {} / {} utts, rejects: {}'.format(len(utt2wav), len(wavs), dict(rejects)))
 
     # hold out dev utterances per speaker for cross validation

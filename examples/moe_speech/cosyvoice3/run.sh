@@ -30,7 +30,7 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
   echo "Extract campplus speaker embedding, you will get spk2embedding.pt and utt2embedding.pt in data/$x dir"
   for x in train dev; do
     python ../../../tools/extract_embedding.py --dir data/$x \
-      --onnx_path $pretrained_model_dir/campplus.onnx --num_thread 16 || exit 1
+      --onnx_path $pretrained_model_dir/campplus.onnx --num_thread 32 || exit 1
   done
 fi
 
@@ -40,9 +40,11 @@ if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
   # the batch onnx shifts 8-25% of the tokens for ~1/4 of the utterances (measured on
   # synthetic data, 2026-07-07). Tokens are the llm training TARGETS, so the reference
   # batch-1 tool stays the default until the batch path is validated on real speech.
+  # --num_sessions runs N parallel batch-1 sessions (one CUDA stream each), which
+  # parallelizes across utterances with numerics identical to a single session
   for x in train dev; do
     python ../../../tools/extract_speech_token.py --dir data/$x \
-      --onnx_path $pretrained_model_dir/speech_tokenizer_v3.onnx --num_thread 16 || exit 1
+      --onnx_path $pretrained_model_dir/speech_tokenizer_v3.onnx --num_thread 16 --num_sessions 4 || exit 1
   done
 fi
 
@@ -61,8 +63,12 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
       utts_per_parquet=1000
     fi
     mkdir -p data/$x/parquet
+    # NOTE --exclude_audio_data: llm training reads precomputed speech tokens, not audio
+    # bytes (~99% of the shard size). Rebuild the parquet WITHOUT this flag before any
+    # flow/hifigan finetuning
     python ../../../tools/make_parquet_list.py --num_utts_per_parquet $utts_per_parquet \
       --num_processes 16 \
+      --exclude_audio_data \
       --src_dir data/$x \
       --des_dir data/$x/parquet || exit 1
   done

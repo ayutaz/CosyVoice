@@ -14,6 +14,7 @@
 # limitations under the License.
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import queue
 import onnxruntime
 import torch
 import torchaudio
@@ -22,17 +23,31 @@ from tqdm import tqdm
 
 from cosyvoice.utils.file_utils import audio_load
 
+# NOTE constructing torchaudio.transforms.Resample recomputes the sinc kernel, cache one
+# transform per source rate instead of building one per utterance
+_resamplers = {}
+
+
+def get_resampler(orig_freq):
+    if orig_freq not in _resamplers:
+        _resamplers[orig_freq] = torchaudio.transforms.Resample(orig_freq=orig_freq, new_freq=16000)
+    return _resamplers[orig_freq]
+
 
 def single_job(utt):
     audio, sample_rate = audio_load(utt2wav[utt])
     if sample_rate != 16000:
-        audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)(audio)
+        audio = get_resampler(sample_rate)(audio)
     feat = kaldi.fbank(audio,
                        num_mel_bins=80,
                        dither=0,
                        sample_frequency=16000)
     feat = feat - feat.mean(dim=0, keepdim=True)
-    embedding = ort_session.run(None, {ort_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()})[0].flatten().tolist()
+    session = session_pool.get()
+    try:
+        embedding = session.run(None, {session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()})[0].flatten().tolist()
+    finally:
+        session_pool.put(session)
     return utt, embedding
 
 
@@ -57,23 +72,32 @@ if __name__ == "__main__":
     parser.add_argument("--dir", type=str)
     parser.add_argument("--onnx_path", type=str)
     parser.add_argument("--num_thread", type=int, default=8)
+    parser.add_argument("--provider", type=str, default="cpu", choices=["cpu", "cuda"],
+                        help="campplus is small, cpu with many threads is usually enough; "
+                             "cuda helps on boxes with few cores")
+    parser.add_argument("--num_sessions", type=int, default=1,
+                        help="parallel onnx sessions; with cuda each owns its own stream")
     args = parser.parse_args()
 
     utt2wav, utt2spk = {}, {}
-    with open('{}/wav.scp'.format(args.dir)) as f:
+    with open('{}/wav.scp'.format(args.dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
+            l = l.replace('\n', '').split(maxsplit=1)
             utt2wav[l[0]] = l[1]
-    with open('{}/utt2spk'.format(args.dir)) as f:
+    with open('{}/utt2spk'.format(args.dir), encoding='utf-8') as f:
         for l in f:
-            l = l.replace('\n', '').split()
+            l = l.replace('\n', '').split(maxsplit=1)
             utt2spk[l[0]] = l[1]
 
     option = onnxruntime.SessionOptions()
     option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
     option.intra_op_num_threads = 1
-    providers = ["CPUExecutionProvider"]
-    ort_session = onnxruntime.InferenceSession(args.onnx_path, sess_options=option, providers=providers)
+    providers = ["CUDAExecutionProvider"] if args.provider == "cuda" else ["CPUExecutionProvider"]
+    session_pool = queue.Queue()
+    # NOTE cpu sessions run concurrently from many threads already, extra sessions only
+    # pay off with the cuda provider where each session owns its own stream
+    for _ in range(max(args.num_sessions, 1)):
+        session_pool.put(onnxruntime.InferenceSession(args.onnx_path, sess_options=option, providers=providers))
     executor = ThreadPoolExecutor(max_workers=args.num_thread)
 
     main(args)
