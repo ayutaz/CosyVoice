@@ -174,7 +174,8 @@ batch: !name:cosyvoice.dataset.processor.batch
     max_frames_in_batch: 15000
 batch_llm: !name:cosyvoice.dataset.processor.dynamic_batch_llm
     # NOTE unit is 50Hz mel frames (2 x speech tokens), 30000 = 600s of audio per batch.
-    # Sized for H100 80GB, use 15000 on 24GB cards (RTX 4090 smoke test) or it will OOM
+    # Sized for H100 80GB and to be confirmed there with a ~200 step probe. On 24GB
+    # cards use 8000: measured on an RTX 4090, 15000 OOMs (22.4GB allocated)
     max_frames_in_batch: 30000
 padding: !name:cosyvoice.dataset.processor.padding
     use_spk_embedding: False # change to True during sft

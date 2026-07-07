@@ -291,6 +291,29 @@ moe_speech レシピ側:
 
 **却下(検証で落ちたもの)**: flash-attn 2(§6.3)、find_unused_parameters=False 単独(DDP スキップに包含)、monitored_barrier/NCCL チューニング(ws=1 では <0.1%)、`.to(device, non_blocking=True)`(直後の .cpu()/.item() 同期で無意味)。
 
+### 6.5 Linux E2E スモークテスト結果 (2026-07-07, vast.ai RTX 4090 $0.336/hr)
+
+合成 2000 発話(2〜12 秒)で clone → uv sync → モデル DL → stage 0-3 → stage 5(2 エポック ×2 回)を実施。**本番前に 4 つの地雷を検出・修正**:
+
+| 問題 | 症状 | 修正 |
+|---|---|---|
+| **torchaudio 2.9+ の torchcodec 依存** | `torchaudio.load/save` が ImportError → 前処理が例外を握りつぶし**全発話が空トークン**の「見かけ成功」 | `audio_load/audio_save`(soundfile 直叩き)を file_utils に追加し学習経路の全呼び出しを置換 (`812609f`) |
+| **torch 2.11 で `ProcessGroup.options` 削除** | 学習ループ 2 バッチ目で AttributeError | cosyvoice_join が `--timeout` 引数から timedelta を渡す (`3e020f5`) |
+| run.sh がステージ失敗を握りつぶす | 半壊した前処理成果物で後段が走る | 全ステージに `\|\| exit 1` |
+| バッチ ONNX トークン抽出の数値ずれ | バッチ内ゼロパディングで**約 1/4 の発話のトークンが 8〜25% 相違**(先頭付近から)。約半数は完全一致(長さ数え方の差のみ) | トークンは学習ターゲットのため **stage 2 の既定をバッチ 1 ツールに戻す**。バッチ版は実データ検証まで opt-in |
+
+**torch.compile 判定(採用確定)**: eager vs `--torch_compile`、各 2 エポック 740 バッチ、max_frames 8000:
+
+| 指標 | eager | compile |
+|---|---|---|
+| エポック 1(ウォーム)実時間 370 バッチ | 63.8s | **53.0s (-17%)** |
+| 定常ステップ中央値 | 165.5ms | **137.0ms (-17.2%)** |
+| recompile イベント(756 ステップ) | — | **2 回のみ**(shape bucket 1 + eval graph 1、定常での再発なし) |
+| compile ウォームアップ | — | ~90 秒(一回きり、時間単位の本番では無視できる) |
+| 初回 loss/acc | 2.0350 / 0.3940 | 2.0353 / 0.3923(bf16 ノイズ内で一致) |
+
+その他の確認事項: loss 2.04→1.17 / acc 0.39→0.60 と学習が正常進行、checkpoint は `module.`/`_orig_mod` 汚染なしで事前学習 llm.pt とキー完全一致(epoch/step メタデータ有り、再開可)、CV は bf16 で dev 4 発話 ~1 秒。**VRAM 実測: max_frames 15000 は 24GB で OOM**(22.4GB 割当)→ 24GB カードのガイダンスは 8000。H100 の 30000 は本番前に ~200 ステップのプローブで確認すること。
+
 ## 7. 参考リンク
 
 - [issue #1705: CV3 学習の語彙サイズ不一致](https://github.com/FunAudioLLM/CosyVoice/issues/1705)
