@@ -45,7 +45,10 @@ ENV PYTHONPATH="${PYTHONPATH}:/workspace/CosyVoice:/workspace/CosyVoice/third_pa
 RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git
 
 RUN conda activate ${VENV} && conda install -y -c conda-forge pynini==2.1.5
+# NOTE dependencies are managed in pyproject.toml/uv.lock, export them for the conda env
 RUN conda activate ${VENV} && cd CosyVoice && \
-    pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com --no-cache-dir
+    pip install uv --no-cache-dir && \
+    uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt && \
+    pip install -r /tmp/requirements.txt --no-cache-dir
 
 WORKDIR /workspace/CosyVoice

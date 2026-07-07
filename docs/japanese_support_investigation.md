@@ -110,7 +110,7 @@ pyopenjtalk 0.4.1 (Windows / Python 3.10 wheel) で、`run_frontend()` の NJD *
 - `cosyvoice/utils/ja_frontend.py`(変換本体)
 - `cosyvoice/cli/frontend.py`(`text_normalize` への統合)
 - `tests/test_ja_frontend.py`(12 件パス)
-- `example.py` / `requirements.txt`(pyopenjtalk==0.4.1)
+- `example.py` / `pyproject.toml`(pyopenjtalk==0.4.1)
 
 バックアップ(同内容): `<scratchpad>/ja_impl_backup/`(ja_frontend.py, test_ja_frontend.py, tracked_changes.patch)
 
@@ -131,7 +131,7 @@ pyopenjtalk 0.4.1 (Windows / Python 3.10 wheel) で、`run_frontend()` の NJD *
 
 ### Phase 2: 実音声での評価パイプライン(~1 日)
 
-- venv 再構築 + `requirements.txt` インストール + `Fun-CosyVoice3-0.5B` ダウンロード。
+- `uv sync`(全依存は pyproject.toml / uv.lock 管理)+ `Fun-CosyVoice3-0.5B` ダウンロード。
 - JSUT (basic5000) 等の文を合成 → ASR (Whisper large-v3 / Fun-ASR) で書き起こし → CER で自動評価。
 - 「変換なし」vs「カタカナ変換あり」vs「FT 後(漢字直入力)」の 3 条件比較がゴール。FT の前にベースライン 2 条件を測っておく。
 
@@ -220,10 +220,12 @@ CUDA ドライバは 12.5+ のホストで torch 2.3.1 (cu121) がそのまま�
 
 ## 5. 環境メモ (Windows ローカル)
 
-- **uv はプロジェクト管理で運用する**: `uv init --bare --python 3.10` 済み(pyproject.toml + uv.lock)。
+- **uv はプロジェクト管理で運用する**: 依存はすべて pyproject.toml + uv.lock(`uv sync` で環境構築)。
   依存追加は **`uv add <pkg>`**(`uv pip` は使わない方針、ユーザー指示 2026-07-07)。
-  現在の依存: pyopenjtalk==0.4.1 / regex / pytest / vastai。
-- フル実行(推論・学習)は別途 requirements.txt 系の依存が必要(vast.ai 側の Linux 環境で導入する)。
+- **requirements.txt は廃止 (2026-07-07)**: 全 42 依存を pyproject.toml に移行(プラットフォームマーカー、
+  PyTorch cu121 / onnxruntime-cuda-12 のカスタムインデックス、deepspeed・tensorrt の静的メタデータ、
+  openai-whisper の setuptools<81 ビルド依存を含む)。Docker は `uv export --frozen` 経由で pip インストール。
+  vastai CLI は pillow ピン衝突のため依存に含めず **`uvx vastai`** で隔離実行する。
 - `pretrained_models/` は未ダウンロード。pyopenjtalk は初回実行時に辞書 (~22MB) を自動ダウンロードする。
 - `.env`(`VAST_API_KEY`)は .gitignore 追加済み。**Claude Code は .env を読み書きできない**(セキュリティ設定)ため、作成・編集はユーザーが行う。
 - HF は `hf` CLI でログイン済み(gated データセットのダウンロード可)。
