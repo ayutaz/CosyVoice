@@ -34,8 +34,16 @@ fi
 if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
   echo "Extract discrete speech token, you will get utt2speech_token.pt in data/$x dir"
   for x in train dev; do
-    python ../../../tools/extract_speech_token.py --dir data/$x \
-      --onnx_path $pretrained_model_dir/speech_tokenizer_v3.onnx --num_thread 16
+    if [ -f $pretrained_model_dir/speech_tokenizer_v3.batch.onnx ]; then
+      # NOTE batched GPU extraction, ~4-8x faster than the batch-1 tool for 600h;
+      # --verify_num cross-checks random utts against batch-1 and aborts on mismatch
+      python local/extract_speech_token_batch.py --dir data/$x \
+        --onnx_path $pretrained_model_dir/speech_tokenizer_v3.batch.onnx \
+        --num_thread 16 --batch_size 32 --verify_num 200
+    else
+      python ../../../tools/extract_speech_token.py --dir data/$x \
+        --onnx_path $pretrained_model_dir/speech_tokenizer_v3.onnx --num_thread 16
+    fi
   done
 fi
 
