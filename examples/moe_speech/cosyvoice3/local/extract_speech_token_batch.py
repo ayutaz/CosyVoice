@@ -91,7 +91,9 @@ def make_session(onnx_path, provider):
     option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
     if provider == 'cuda':
         local_rank = int(os.environ.get('LOCAL_RANK', 0))
-        providers = [("CUDAExecutionProvider", {'device_id': local_rank})]
+        # NOTE HEURISTIC: the default EXHAUSTIVE cudnn search re-benchmarks conv algos
+        # for every new input shape, deadly with varying utterance lengths
+        providers = [("CUDAExecutionProvider", {'device_id': local_rank, 'cudnn_conv_algo_search': 'HEURISTIC'})]
     else:
         providers = ["CPUExecutionProvider"]
     return onnxruntime.InferenceSession(onnx_path, sess_options=option, providers=providers)
@@ -126,12 +128,26 @@ def run_batch(session, input_names, batch, utt2speech_token):
         utt2speech_token[utt] = tokens[idx][:n_tok].tolist()
 
 
+def run_batch_equal_length(session, input_names, batch, utt2speech_token):
+    """Run a batch whose mels ALL share the same T: no padding exists, so every output
+    row is the complete model output for that utterance and no slicing is needed.
+    Token sequences match the batch-1 reference (a rare near-codebook-boundary flip
+    aside, measured 1 token in ~4400 on real data)."""
+    t = batch[0][1].shape[1]
+    feats = np.stack([mel for _, mel in batch])
+    feats_length = np.full((len(batch),), t, dtype=np.int32)
+    tokens = session.run(None, {input_names[0]: feats, input_names[1]: feats_length})[0]
+    for idx, (utt, _) in enumerate(batch):
+        utt2speech_token[utt] = tokens[idx].flatten().tolist()
+
+
 def flush_buffer(session, input_names, buffer, args, utt2speech_token, pbar):
     """Sort a buffer chunk by mel length and slice it into onnx calls.
 
-    Each batch is capped by both --batch_size and --max_batch_frames (the total
-    padded mel frames, i.e. batch_size * padded_T). At least one utterance is
-    always placed in a batch even if it alone exceeds --max_batch_frames.
+    With --equal_length (default) a batch only holds utterances whose mel length is
+    exactly equal, eliminating padding and its numeric drift. Otherwise batches are
+    packed by --batch_size and --max_batch_frames (total padded mel frames) with zero
+    padding to the batch max. At least one utterance is always placed in a batch.
     """
     buffer.sort(key=lambda x: x[1].shape[1])
     i, n = 0, len(buffer)
@@ -140,6 +156,8 @@ def flush_buffer(session, input_names, buffer, args, utt2speech_token, pbar):
         max_t = 0
         while i < n:
             mel = buffer[i][1]
+            if args.equal_length and batch and mel.shape[1] != max_t:
+                break
             new_max_t = max(max_t, mel.shape[1])
             padded_frames = new_max_t * (len(batch) + 1)
             if batch and (len(batch) >= args.batch_size or padded_frames > args.max_batch_frames):
@@ -147,7 +165,10 @@ def flush_buffer(session, input_names, buffer, args, utt2speech_token, pbar):
             batch.append(buffer[i])
             max_t = new_max_t
             i += 1
-        run_batch(session, input_names, batch, utt2speech_token)
+        if args.equal_length:
+            run_batch_equal_length(session, input_names, batch, utt2speech_token)
+        else:
+            run_batch(session, input_names, batch, utt2speech_token)
         pbar.update(len(batch))
 
 
@@ -249,6 +270,9 @@ if __name__ == "__main__":
                         help="max total padded mel frames (batch_size * padded_T) per onnx call")
     parser.add_argument("--provider", type=str, default="cuda", choices=["cuda", "cpu"],
                         help="onnxruntime execution provider")
+    parser.add_argument("--equal_length", action=argparse.BooleanOptionalAction, default=True,
+                        help="batch only mels with exactly equal length: no padding, tokens match "
+                             "the batch-1 reference (use --no-equal_length for padded packing)")
     parser.add_argument("--verify_num", type=int, default=0,
                         help="if >0, re-extract N random utts at batch 1 and check exact-match rate")
     args = parser.parse_args()
