@@ -1,0 +1,10 @@
+[project]
+name = "cosyvoice"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pyopenjtalk==0.4.1",
+    "pytest>=9.1.1",
+    "regex>=2026.6.28",
+    "vastai>=1.2.1",
+]
