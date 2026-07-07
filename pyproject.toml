@@ -4,33 +4,32 @@ version = "0.1.0"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "conformer==0.3.2",
-    "deepspeed==0.15.1; sys_platform == 'linux'",
     "diffusers==0.29.0",
     "fastapi==0.115.6",
     "fastapi-cli==0.0.4",
     "gdown==5.1.0",
     "gradio==5.4.0",
-    "grpcio==1.57.0",
-    "grpcio-tools==1.57.0",
+    "grpcio==1.62.3",
+    "grpcio-tools==1.62.3",
     "hydra-core==1.3.2",
     "hyperpyyaml==1.2.3",
     "inflect==7.3.1",
     "librosa==0.10.2",
     "lightning==2.2.4",
-    "matplotlib==3.7.5",
+    "matplotlib==3.9.4",
     "modelscope==1.20.0",
     "networkx==3.1",
     "numpy==1.26.4",
     "omegaconf==2.3.0",
-    "onnx==1.16.0",
-    "onnxruntime-gpu==1.18.0; sys_platform == 'linux'",
-    "onnxruntime==1.18.0; sys_platform == 'darwin' or sys_platform == 'win32'",
+    "onnx==1.17.0",
+    "onnxruntime-gpu==1.22.0; sys_platform == 'linux'",
+    "onnxruntime==1.22.0; sys_platform == 'darwin' or sys_platform == 'win32'",
     "openai-whisper==20231117",
     "protobuf==4.25",
     "pyarrow==18.1.0",
     "pydantic==2.7.0",
-    "pyopenjtalk==0.4.1",
-    "pyworld==0.3.4",
+    "pyopenjtalk-plus>=0.4.1.post8",
+    "pyworld==0.3.5",
     "regex>=2026.6.28",
     "rich==13.7.1",
     "soundfile==0.12.1",
@@ -38,8 +37,8 @@ dependencies = [
     "tensorrt-cu12==10.13.3.9; sys_platform == 'linux'",
     "tensorrt-cu12-bindings==10.13.3.9; sys_platform == 'linux'",
     "tensorrt-cu12-libs==10.13.3.9; sys_platform == 'linux'",
-    "torch==2.3.1",
-    "torchaudio==2.3.1",
+    "torch==2.11.*",
+    "torchaudio==2.11.*",
     "transformers==4.51.3",
     "uvicorn==0.30.0",
     "wetext==0.0.4",
@@ -50,35 +49,32 @@ dependencies = [
 # NOTE vastai CLI conflicts with gradio/matplotlib pillow pins, run it isolated via `uvx vastai`
 [dependency-groups]
 dev = [
+    "hf-transfer>=0.1.8",
     "pytest>=9.1.1",
 ]
 
+# NOTE transformers is pinned to 4.x on purpose, transformers 5.x changes the Qwen2 numerics
+# and collapses CosyVoice2/3 autoregressive inference into noise, see
+# https://github.com/FunAudioLLM/CosyVoice/issues/1886
+
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
-torchaudio = [{ index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
-onnxruntime-gpu = [{ index = "onnxruntime-cuda-12", marker = "sys_platform == 'linux'" }]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
+torchaudio = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
 
 [[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
-
-# https://github.com/microsoft/onnxruntime/issues/21684
-[[tool.uv.index]]
-name = "onnxruntime-cuda-12"
-url = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 # NOTE openai-whisper 20231117 setup.py needs pkg_resources, removed in setuptools>=81
 [tool.uv.extra-build-dependencies]
 openai-whisper = ["setuptools<81"]
 
-# NOTE static metadata so uv lock does not need to build these linux-only sdists
-[[tool.uv.dependency-metadata]]
-name = "deepspeed"
-version = "0.15.1"
-requires-dist = ["hjson", "msgpack", "ninja", "numpy", "nvidia-ml-py", "packaging>=20.0", "psutil", "py-cpuinfo", "pydantic", "torch", "tqdm"]
+# NOTE deepspeed was dropped from the dependencies on purpose: the recipes train with
+# torch_ddp, the imports are optional in train.py/train_utils.py, and the deepspeed sdist
+# cannot be built without torch preinstalled. Install it manually if you need the engine.
 
+# NOTE static metadata so uv lock does not need to build this linux-only sdist
 [[tool.uv.dependency-metadata]]
 name = "tensorrt-cu12"
 version = "10.13.3.9"

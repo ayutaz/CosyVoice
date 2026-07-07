@@ -21,7 +21,11 @@ from copy import deepcopy
 import os
 import torch
 import torch.distributed as dist
-import deepspeed
+# NOTE deepspeed is optional, only required for --train_engine deepspeed
+try:
+    import deepspeed
+except ImportError:
+    deepspeed = None
 
 from hyperpyyaml import load_hyperpyyaml
 
@@ -89,8 +93,15 @@ def get_args():
                         default=60,
                         type=int,
                         help='timeout (in seconds) of cosyvoice_join.')
-    parser = deepspeed.add_config_arguments(parser)
+    if deepspeed is not None:
+        parser = deepspeed.add_config_arguments(parser)
+    else:
+        # keep the recipe command lines working without deepspeed installed
+        parser.add_argument('--deepspeed', action='store_true', default=False)
+        parser.add_argument('--deepspeed_config', type=str, default=None)
     args = parser.parse_args()
+    if args.train_engine == 'deepspeed' and deepspeed is None:
+        raise ImportError('deepspeed is not installed but --train_engine deepspeed is requested')
     return args
 
 
@@ -100,6 +111,9 @@ def main():
     os.environ['onnx_path'] = args.onnx_path
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
+    # NOTE allow tf32 on ampere+ for the fp32 ops outside the autocast region
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     # gan train has some special initialization logic
     gan = True if args.model == 'hifigan' else False
 

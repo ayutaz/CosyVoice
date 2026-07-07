@@ -22,15 +22,17 @@ import re
 import datetime
 import yaml
 
-import deepspeed
+# NOTE deepspeed is optional, only required for train_engine deepspeed
+try:
+    import deepspeed
+except ImportError:
+    deepspeed = None
 import torch.optim as optim
 import torch.distributed as dist
 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-
-from deepspeed.runtime.zero.stage_1_and_2 import estimate_zero2_model_states_mem_needs_all_live
 
 from cosyvoice.dataset.dataset import Dataset
 from cosyvoice.utils.scheduler import WarmupLR, NoamHoldAnnealing, ConstantLR
