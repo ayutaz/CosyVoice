@@ -44,6 +44,7 @@ dependencies = [
     "wetext==0.0.4",
     "wget==3.2",
     "x-transformers==2.11.24",
+    "peft>=0.19.1",
 ]
 
 # NOTE vastai CLI conflicts with gradio/matplotlib pillow pins, run it isolated via `uvx vastai`
