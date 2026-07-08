@@ -98,15 +98,16 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 ### スコープ(Phase 分割)
 
-**Phase 1: 実装(GPU 不要、ローカルで進められる)**
-- [ ] `DiffusionCosyVoice3LM`(仮称)の実装: `cosyvoice/llm/llm.py` の `CosyVoice3LM`(llm.py:669)を継承 or 並置
-  - 双方向 attention 化(Qwen2 の causal mask 差し替え)
-  - LoRA(peft 利用を想定 → `uv add peft`)
-  - [M] トークン追加(speech_embedding の平均で初期化)
-  - Conformer 風 conv モジュール(kernel 31, GLU, Swish, dropout 0.1, 残差)
-- [ ] 訓練スクリプト: `cosyvoice/bin/train_draft.py` の構成を参考に masked-diffusion 用データローダ/損失(1/t 加重 CE)を実装
-- [ ] 推論: 信頼度順序デコーディング + 時間シフトスケジュール + ルールベース長決定
-- [ ] ユニットテスト(`tests/`、`.venv\Scripts\python.exe -m pytest`)
+**Phase 1: 実装 — 完了(2026-07-09。詳細は `docs/delta_tts_phase1_implementation.md`)**
+- [x] `DiffusionCosyVoice3LM` の実装: `cosyvoice/llm/diffusion_llm.py`(CosyVoice3LM を継承)
+  - 双方向 attention 化(4D additive マスク)/ LoRA r=64(peft)/ [M] は独立 nn.Parameter /
+    ConformerConvModule(k=31, GLU, SiLU, dropout 0.1, 残差, 最終pwゼロ初期化)
+- [x] 訓練スクリプト: `cosyvoice/bin/train_delta.py` + `cosyvoice3_delta.yaml`(1/t 加重 CE、
+  ConstantWithWarmupLR で論文の lr=1e-4 定数を再現)
+- [x] 推論: `inference_diffusion`(信頼度順序デコーディング + 時間シフトスケジュール + ルールベース長)
+- [x] ユニットテスト 46 件 + 0.5B 実機スモーク(`scripts/spikes/s8_delta_smoke.py`)。
+  trainable が論文と一致(LoRA 35,192,832 / conv 58,641,408)することを実機確認済み
+- 未実施(Phase 2 冒頭へ): `cli/model.py` / `cli/cosyvoice.py` への配線、長さルールの文字数基準化
 
 **Phase 2: 英語での忠実再現(vast.ai H100)**
 - [ ] LibriTTS 585h の準備(既存の `scripts/prepare_libritts.py` が流用候補)
@@ -159,10 +160,9 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 ## 7. 次のアクション
 
-Phase 0(技術スパイク S1〜S4)は完了(2026-07-08、結果は `docs/delta_tts_phase0_verification.md`)。
-`peft==0.19.1` 追加済み。
+Phase 0(技術スパイク、2026-07-08)と Phase 1(実装、2026-07-09)は完了。
+結果は `docs/delta_tts_phase0_verification.md` / `docs/delta_tts_phase1_implementation.md`。
 
-1. Phase 1 実装に着手: 拡散版 LM クラス(phase0 doc B-1〜B-4 の確定仕様に従う)、
-   `train_delta.py`、信頼度順序デコーディング
-2. 実装が通ったらダミーデータで訓練ループのスモークテスト
-3. vast.ai H100 で S5〜S7(ARベースライン RTF / LibriTTS 疎通 / 長尺一括合成)→ Phase 2 へ
+1. vast.ai H100 で S5〜S7(ARベースライン RTF / LibriTTS 疎通・トークン抽出 / 長尺一括合成)
+2. LibriTTS 585h で delta 訓練(Phase 2)、`cli/model.py` への推論配線と文字数基準の長さルール
+3. Seed-TTS test-en で WER/SIM/RTF 評価 → 論文表1・表5との突き合わせ
