@@ -101,7 +101,7 @@ for i, j in enumerate(cosyvoice.inference_cross_lingual(text, './asset/zero_shot
 
 | 種別 | パス |
 |---|---|
-| FT済みモデル | `checkpoints/cosyvoice3_ja/llm.pt`(+ ベスト単体 `epoch_4_step_16000.pt`) |
+| FT済みモデル | `checkpoints/cosyvoice3_ja/llm.pt`(+ ベスト単体 `epoch_4_step_16000.pt`)。**バックアップ: HF private `ayousanz/cosyvoice3-ja-llm`**(再配布禁止データ由来のため private 維持) |
 | 学習レシピ | `examples/moe_speech/cosyvoice3/`(run.sh / conf / prepare_data / 並列抽出ツール) |
 | 日本語フロントエンド | `cosyvoice/utils/ja_frontend.py` |
 | 評価スクリプト | `scripts/eval_ja_cer.py` + `eval_out/report.json` |
