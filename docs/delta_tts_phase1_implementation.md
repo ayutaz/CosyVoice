@@ -9,8 +9,9 @@ Phase 1(拡散版 LM・訓練スクリプト・推論デコーディングの実
 |---|---|
 | `cosyvoice/llm/diffusion_llm.py` | コア実装(下記 §2) |
 | `cosyvoice/bin/train_delta.py` | 訓練エントリポイント(§3) |
-| `examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml` | 訓練設定 |
-| `tests/test_delta_llm.py` | ユニットテスト 46 件(§5) |
+| `examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml` | 訓練設定(英語 LibriTTS、オプション経路) |
+| `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml` | **訓練設定(日本語 moe-speech-plus、主経路)** |
+| `tests/test_delta_llm.py` | ユニットテスト 48 件(§5) |
 | `scripts/spikes/s8_delta_smoke.py` | 0.5B 実機スモーク(再実行可能) |
 
 **既存ファイルは一切変更していない**(git diff で確認済み)。
@@ -20,9 +21,10 @@ Phase 1(拡散版 LM・訓練スクリプト・推論デコーディングの実
 ### クラス構成
 
 - **`DiffusionCosyVoice3LM(CosyVoice3LM)`** — 拡散版 LM 本体
-  - `forward(batch, device)`: masked diffusion 訓練損失。系列 `[sos, text(全文・非分割), task, s_prompt(可視), s_target(マスク), eos]`、
+  - `forward(batch, device)`: masked diffusion 訓練損失。系列 `[sos, (instruct,) text(全文・非分割), task, s_prompt(可視), s_target(マスク), eos]`、
     プロンプト接頭辞 `L~U(0, prompt_ratio_max·T)`(確率 `prompt_drop` で 0)、`t~U(t_min,1)` の iid マスク、
-    1/t 加重 CE(マスク位置のみ、出力側 shift)
+    1/t 加重 CE(マスク位置のみ、出力側 shift)。batch に `instruct_token` があれば text 領域の
+    先頭に連結(可視・損失対象外。日本語 FT の学習分布および論文の t_inst と整合)
   - `inference_diffusion(...)`: 信頼度順序デコーディング。Qwen2LM.inference 互換の generator
     (デコード完了後にトークンを逐次 yield → `cli/model.py` の `llm_job` と互換)
   - `apply_lora()` / `attach_conv_modules()` / `init_mask_embedding()` / `freeze_for_delta()` /
@@ -57,6 +59,24 @@ Phase 1(拡散版 LM・訓練スクリプト・推論デコーディングの実
 
 ## 3. 訓練(`train_delta.py` + `cosyvoice3_delta.yaml`)
 
+**日本語(主経路)** — 凍結バックボーンは日本語 FT 済み llm、データは moe_speech parquet:
+
+```bash
+PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
+    --train_engine torch_ddp --ddp.dist_backend gloo --model llm \
+    --config examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml \
+    --train_data data/moe_speech/train.data.list --cv_data data/moe_speech/dev.data.list \
+    --model_dir ./checkpoints_delta_ja \
+    --checkpoint checkpoints/cosyvoice3_ja/llm.pt \
+    --qwen_pretrain_path pretrained_models/Fun-CosyVoice3-0.5B/CosyVoice-BlankEN
+```
+
+※ `checkpoints/cosyvoice3_ja/llm.pt` は save_model 形式(`epoch`/`step` キー入り)だが、
+build_delta_model は AR checkpoint から訓練位置を継承しない(unexpected キーとして無害にスキップ)。
+parquet リストは `examples/moe_speech/cosyvoice3/run.sh` の stage で生成(HF gated 認証が必要)。
+
+**英語(オプション)**:
+
 ```bash
 PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
     --train_engine torch_ddp --ddp.dist_backend gloo --model llm \
@@ -86,10 +106,10 @@ PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
 
 ## 5. 品質保証
 
-- **テスト**: `tests/test_delta_llm.py` 46 件(ミニ Qwen2 構成、0.5B 非依存)。スケジュール(浮動小数点罠含む)、
-  shift 整列、マスキング/レイアウト、4D マスク双方向性、conv 恒等・リーク・パラメータ数、凍結範囲、
-  デコード、forward+backward 勾配経路、バッチ内パディング隔離(統合不変量)、ConstantWithWarmupLR。
-  **全スイート 83 passed(既存 37 件にリグレッションなし)**
+- **テスト**: `tests/test_delta_llm.py` 48 件(ミニ Qwen2 構成、0.5B 非依存)。スケジュール(浮動小数点罠含む)、
+  shift 整列、マスキング/レイアウト、instruct 領域の連結、4D マスク双方向性、conv 恒等・リーク・パラメータ数、
+  凍結範囲、デコード、forward+backward 勾配経路、バッチ内パディング隔離(統合不変量)、ConstantWithWarmupLR。
+  **全スイート 85 passed(既存 37 件にリグレッションなし)**
 - **多段検証**(ultracode): 実装 → テスト(初回 40 件 green、実装修正ゼロ)→ 3方向レビュー
   (仕様忠実性/正当性/統合)で 13 指摘 → 敵対的検証で 12 confirmed / 1 refuted → 全 confirmed を修正適用。
   主な修正: スケジューラ差し替え(major)、k_n=0 ステップの無駄 forward 除去(RTF 計測の公平性)、
@@ -101,6 +121,9 @@ PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
 
 1. 訓練前の出力は縮退(LoRA-B/conv ゼロ初期化のため)— スモークは機構の検証のみ
 2. 1/t 加重損失は小バッチで高分散(実測: weighted 86.3 vs raw CE 10.7)→ 訓練時は生 CE も併記ログ推奨
-3. `t_inst` は空で開始(論文未記載)。`<|endofprompt|>` の扱いは CLI 統合時に確定
-4. LibriTTS の CV3 用データ準備(speech_tokenizer_v3 でのトークン抽出)は Phase 2(S6)
+3. instruct(t_inst)対応済み: batch の `instruct_token` を text 領域へ連結(日本語 FT は全発話
+   `You are a helpful assistant.<|endofprompt|>` 付きで学習されているため必須)。推論では instruct は
+   text トークン列の中に入って届く(AR の cross-lingual 経路と同じ)ため専用引数は不要
+4. 訓練データ準備は Phase 2: 日本語は moe_speech parquet(vast.ai で run.sh 再実行 or 前回シャード再利用)、
+   英語(オプション)は LibriTTS の speech_tokenizer_v3 抽出
 5. 'Sliding Window Attention is enabled but not implemented' 警告は既存 AR ロードと同じで無害

@@ -410,7 +410,8 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
         the loss reads only the masked ones through the returned mask.
 
         Args:
-            text_emb: (Lt, D) full transcript embedding.
+            text_emb: (Lt, D) text-region embedding (optional instruct prefix
+                followed by the full transcript, never split).
             speech_emb: (Ls, D) speech token embeddings.
             speech_token: (Ls,) long speech token ids.
             prompt_len: number of leading speech tokens kept visible (s_prompt).
@@ -442,10 +443,16 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
     ) -> Dict[str, Optional[torch.Tensor]]:
         """Masked-diffusion training loss (phase0 doc B-2/B-4).
 
-        Reads the same batch keys as Qwen2LM.forward: text_token(_len) and
-        speech_token(_len). instruct_token, if present in the batch, is
-        ignored: the delta layout is the fixed unistream sequence
-        [sos, text, task_id, speech, eos] (S4, no instruct region).
+        Reads the same batch keys as Qwen2LM.forward: text_token(_len),
+        speech_token(_len) and optionally instruct_token(_len). When
+        instruct_token is present (e.g. the moe_speech recipe stores
+        'You are a helpful assistant.<|endofprompt|>' per utterance) it is
+        prepended to the text region, always visible and never in the loss:
+        [sos, instruct, text, task_id, speech, eos]. This matches both the
+        paper layout ([SOS, t_inst, ...]) and the unistream convention the
+        AR backbone was (fine-)tuned with. At inference no separate instruct
+        argument exists: the instruct text arrives inside the text tokens,
+        as in the AR zero-shot/cross-lingual paths.
 
         Per sample: prompt prefix L_p = floor(u * Ls) with u ~ U(0,
         prompt_ratio_max), dropped to 0 with probability prompt_drop; masking
@@ -466,6 +473,10 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
         speech_token_len = batch['speech_token_len'].to(device)
         text_emb = self.llm.model.model.embed_tokens(text_token)
         speech_emb = self.speech_embedding(speech_token)
+        instruct_emb, instruct_token_len = None, None
+        if 'instruct_token' in batch:
+            instruct_token_len = batch['instruct_token_len'].to(device)
+            instruct_emb = self.llm.model.model.embed_tokens(batch['instruct_token'].to(device))
 
         seq_embs, token_ids, seq_masks, sample_weights = [], [], [], []
         for i in range(text_token.size(0)):
@@ -476,7 +487,10 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
                 prompt_len = 0
             t = self.t_min + (1.0 - self.t_min) * random.random()
             target_mask = torch.rand(speech_len_i - prompt_len, device=device) < t
-            seq_emb, ids, mask = self._build_delta_sequence(text_emb[i, :text_len_i], speech_emb[i, :speech_len_i],
+            text_region = text_emb[i, :text_len_i]
+            if instruct_emb is not None:
+                text_region = torch.concat([instruct_emb[i, :int(instruct_token_len[i])], text_region], dim=0)
+            seq_emb, ids, mask = self._build_delta_sequence(text_region, speech_emb[i, :speech_len_i],
                                                             speech_token[i, :speech_len_i], prompt_len, target_mask)
             seq_embs.append(seq_emb)
             token_ids.append(ids)

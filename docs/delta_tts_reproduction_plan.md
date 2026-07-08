@@ -90,11 +90,15 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 ## 4. 再現実験で「何をしたいのか」
 
-### 目的
+### 目的(2026-07-09 再スコープ: 日本語適用が主目的)
 
-1. **忠実再現**: CosyVoice3 + LibriTTS で論文の変換手法を実装し、WER / SIM / RTF が論文値(WER 1.75%、RTF 0.144、3.3×高速化)に近づくか検証する
-2. **日本語への展開**(本プロジェクト固有の動機): 現ブランチで構築した日本語対応 CosyVoice3(カタカナフロントエンド + moe-speech-plus 600h FT 済みモデル)に同じ変換を適用し、**日本語ゼロショット TTS の高速化(3〜4×)と CER 維持・改善**が成立するか確認する
-3. 副次的に、既存の SSD (speculative decoding) ブランチとの**速度・品質トレードオフ比較**の土台を作る
+1. **主目的 — 日本語モデルへの適用**: 日本語 FT 済み CosyVoice3(`checkpoints/cosyvoice3_ja/llm.pt`、
+   moe-speech-plus 470h で漢字直接入力 CER 0.085 を達成済み。`docs/japanese_finetuning_report.md`)を
+   凍結バックボーンとして delta 変換し、**日本語ゼロショット TTS の高速化(3〜4× 目標)と
+   CER 維持(ft_kanji 0.085 → 0.10 以下を目安)**が成立するか検証する
+2. (オプション)英語忠実再現: LibriTTS + 公式 checkpoint で論文値(WER 1.75%、RTF 0.144)との
+   突き合わせが必要になった場合の参考パス
+3. 副次的に、既存の SSD (speculative decoding) ブランチとの速度・品質トレードオフ比較の土台を作る
 
 ### スコープ(Phase 分割)
 
@@ -109,14 +113,25 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
   trainable が論文と一致(LoRA 35,192,832 / conv 58,641,408)することを実機確認済み
 - 未実施(Phase 2 冒頭へ): `cli/model.py` / `cli/cosyvoice.py` への配線、長さルールの文字数基準化
 
-**Phase 2: 英語での忠実再現(vast.ai H100)**
-- [ ] LibriTTS 585h の準備(既存の `scripts/prepare_libritts.py` が流用候補)
-- [ ] CosyVoice3 公式 checkpoint 凍結 + LoRA 訓練(A100×1 相当 → H100×1 で可)
-- [ ] Seed-TTS test-en で WER/SIM/RTF 評価 → 論文表1・表5と突き合わせ
+**Phase 2: 日本語 delta 訓練と評価(vast.ai H100)**
+- [x] 日本語用 delta 設定: `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml`
+  (moe_speech の波形フリー llm パイプライン + instruct 列 + 論文の訓練レシピ)
+- [x] instruct 領域対応: 日本語 FT は全発話 `You are a helpful assistant.<|endofprompt|>` 付きで
+  学習されているため、delta forward が instruct を text 領域の先頭に連結(可視・損失対象外)
+- [ ] moe-speech-plus parquet の用意(vast.ai 上で `run.sh` stage 再実行 or 前回シャードの再利用。
+  HF gated のため認証が必要)
+- [ ] GPU 検証 S5-S7: **AR ベースライン = 日本語 FT モデル**の RTF 計測、長尺一括合成確認
+- [ ] delta 訓練: `--checkpoint checkpoints/cosyvoice3_ja/llm.pt`(HF バックアップ:
+  private `ayousanz/cosyvoice3-ja-llm`)、config は上記 yaml
+- [ ] `cli/model.py` / `cli/cosyvoice.py` への `inference_diffusion` 配線
+- [ ] 評価: `scripts/eval_ja_cer.py` に delta 経路(delta_kanji 等)を追加し、
+  AR 4 経路のベースライン(ft_kanji 0.085 / base_katakana 0.097)と CER・RTF を比較
 
-**Phase 3: 日本語展開**
-- [ ] 日本語 FT 済みモデル(バックアップ済み checkpoint)をバックボーンとして同手法を適用
-- [ ] moe-speech-plus を訓練データに、既存の日本語 CER 評価パイプライン(`docs/japanese_finetuning_report.md` 参照)で AR 版と比較
+**Phase 3(オプション): 英語での忠実再現**
+- [ ] LibriTTS 585h の準備(`origin/feature/speech-speculative-decoding` の
+  `scripts/prepare_libritts.py` が流用候補)+ 公式 checkpoint で訓練
+- [ ] Seed-TTS test-en で WER/SIM/RTF 評価 → 論文表1・表5と突き合わせ
+- 設定は作成済み: `examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml`
 
 ### 本リポジトリでの主な変更対象
 
@@ -133,10 +148,14 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 ## 5. 評価計画
 
-- **英語**: Seed-TTS test-en(公開されている 1,088件)で WER(Whisper-large-v3)/ SIM(WavLM-large ECAPA-TDNN)/ UTMOS / RTF。論文の表1を再現目標とする
-- **日本語**: 既存 CER 評価パス(frontend/finetune 比較で使用済み)を流用し、AR 版日本語モデルと DELTA 版で CER / SIM / RTF を比較
-- **速度**: 音声長ビン(0-3s / 3-5s / 5-10s)別の speedup を計測(論文表3と同形式)
-- アブレーション再現(最低限): naive変換 → +時間シフト → +conv の3点で WER 変化を確認
+- **日本語(主)**: `scripts/eval_ja_cer.py` の評価パス(漢字混じり20文 × whisper large-v3 CER)に
+  delta 経路を追加し、AR ベースライン(ft_kanji **0.085** / base_katakana 0.097)と比較。
+  合格目安: delta_kanji CER ≤ 0.10 かつ RTF 3× 以上の高速化
+- **速度**: 音声長ビン(0-3s / 3-5s / 5-10s)別の speedup を計測(論文表3と同形式)。
+  ベースラインは同一ハードウェアでの日本語 FT AR モデル
+- アブレーション(余力があれば): naive変換 → +時間シフト → +conv の3点で CER 変化を確認
+- **英語(オプション、Phase 3)**: Seed-TTS test-en(1,088件)で WER(Whisper-large-v3)/
+  SIM(WavLM-large ECAPA-TDNN)/ UTMOS / RTF。論文の表1を再現目標とする
 
 ## 6. 未確定事項・リスク
 
@@ -162,7 +181,10 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 Phase 0(技術スパイク、2026-07-08)と Phase 1(実装、2026-07-09)は完了。
 結果は `docs/delta_tts_phase0_verification.md` / `docs/delta_tts_phase1_implementation.md`。
+2026-07-09 に**日本語適用を主目的に再スコープ**(instruct 対応・日本語用 config 追加済み)。
 
-1. vast.ai H100 で S5〜S7(ARベースライン RTF / LibriTTS 疎通・トークン抽出 / 長尺一括合成)
-2. LibriTTS 585h で delta 訓練(Phase 2)、`cli/model.py` への推論配線と文字数基準の長さルール
-3. Seed-TTS test-en で WER/SIM/RTF 評価 → 論文表1・表5との突き合わせ
+1. `cli/model.py` / `cli/cosyvoice.py` への `inference_diffusion` 配線(ローカルで可能)
+2. vast.ai H100: moe-speech-plus parquet 用意 → 日本語 FT モデルの AR ベースライン RTF 計測 →
+   delta 訓練(`--checkpoint checkpoints/cosyvoice3_ja/llm.pt` +
+   `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml`)
+3. `eval_ja_cer.py` に delta 経路を追加して CER / RTF を AR と比較

@@ -1,0 +1,135 @@
+# DELTA-TTS delta conversion training config for the JAPANESE fine-tuned CosyVoice3
+# (docs/delta_tts_reproduction_plan.md, docs/delta_tts_phase1_implementation.md).
+# Frozen AR backbone: checkpoints/cosyvoice3_ja/llm.pt (moe-speech-plus 470h kanji-input
+# fine-tune, see docs/japanese_finetuning_report.md); trains only LoRA + per-layer conv
+# modules + [M] embedding via cosyvoice/bin/train_delta.py on the same moe_speech parquet
+# shards as the AR fine-tune. The parquet carries a per-utterance instruct
+# ('You are a helpful assistant.<|endofprompt|>') which the diffusion forward prepends to
+# the text region, matching the distribution the backbone was fine-tuned with.
+# llm-only on purpose: no flow/hift/hifigan sections.
+
+# set random seed, so that you may reproduce your result.
+__set_seed1: !apply:random.seed [1986]
+__set_seed2: !apply:numpy.random.seed [1986]
+__set_seed3: !apply:torch.manual_seed [1986]
+__set_seed4: !apply:torch.cuda.manual_seed_all [1986]
+
+# fixed params
+sample_rate: 24000
+llm_input_size: 896
+llm_output_size: 896
+spk_embed_dim: 192
+qwen_pretrain_path: ''
+token_frame_rate: 25
+token_mel_ratio: 2
+
+# delta (masked diffusion) params, consumed by DiffusionCosyVoice3LM
+lora_r: 64            # paper: +35M LoRA params == r=64 (phase0 B-3)
+lora_alpha: 128
+lora_dropout: 0.0     # not specified in the paper, start at 0.0
+conv_kernel: 31       # depthwise conv kernel of the Conformer-style module
+conv_dropout: 0.1
+prompt_ratio_max: 0.5 # L_prompt = floor(u * T_speech), u ~ U(0, prompt_ratio_max)
+prompt_drop: 0.1      # probability of L_prompt = 0 samples
+t_min: 0.01           # lower clip of t ~ U(t_min, 1), keeps the 1/t CE weight bounded
+num_steps: 16         # diffusion decoding steps T at inference
+mu: 0.3               # time-shift schedule parameter (== t_shift in the paper recipe)
+top_p: 0.8            # nucleus sampling p at diffusion inference
+length_scale: 1.0     # multiplier on the rule-based target length
+
+llm: !new:cosyvoice.llm.diffusion_llm.DiffusionCosyVoice3LM
+    llm_input_size: !ref <llm_input_size>
+    llm_output_size: !ref <llm_output_size>
+    speech_token_size: 6561
+    length_normalized_loss: True
+    lsm_weight: 0
+    mix_ratio: [5, 15]
+    llm: !new:cosyvoice.llm.llm.Qwen2Encoder
+        pretrain_path: !ref <qwen_pretrain_path>
+    sampling: !name:cosyvoice.utils.common.ras_sampling
+        top_p: 0.8
+        top_k: 25
+        win_size: 10
+        tau_r: 0.1
+    lora_r: !ref <lora_r>
+    lora_alpha: !ref <lora_alpha>
+    lora_dropout: !ref <lora_dropout>
+    conv_kernel: !ref <conv_kernel>
+    conv_dropout: !ref <conv_dropout>
+    prompt_ratio_max: !ref <prompt_ratio_max>
+    prompt_drop: !ref <prompt_drop>
+    t_min: !ref <t_min>
+    num_steps: !ref <num_steps>
+    mu: !ref <mu>
+    top_p: !ref <top_p>
+    length_scale: !ref <length_scale>
+
+# processor functions
+# NOTE waveform-free llm pipeline as in conf/cosyvoice3.yaml: speech tokens are
+# precomputed in the parquet, no audio decode / mel is needed. 'instruct' is kept:
+# the moe_speech shards store it and the diffusion forward prepends it to the text
+# region (visible, never in the loss).
+parquet_opener_llm: !name:cosyvoice.dataset.processor.parquet_opener
+    columns: ['utt', 'text', 'instruct', 'utt_embedding', 'spk_embedding', 'speech_token']
+get_tokenizer: !name:cosyvoice.tokenizer.tokenizer.get_qwen_tokenizer
+    token_path: !ref <qwen_pretrain_path>
+    skip_special_tokens: True
+    version: cosyvoice3
+allowed_special: 'all'
+tokenize: !name:cosyvoice.dataset.processor.tokenize
+    get_tokenizer: !ref <get_tokenizer>
+    allowed_special: !ref <allowed_special>
+filter_speech_token: !name:cosyvoice.dataset.processor.filter_speech_token
+    max_length: 6000
+    min_length: 100
+    token_max_length: 200
+    token_min_length: 1
+parse_embedding: !name:cosyvoice.dataset.processor.parse_embedding
+    normalize: True
+shuffle: !name:cosyvoice.dataset.processor.shuffle
+    shuffle_size: 1000
+sort_llm: !name:cosyvoice.dataset.processor.sort_by_speech_token
+    sort_size: 500  # sort_size should be less than shuffle_size
+batch_llm: !name:cosyvoice.dataset.processor.batch
+    # static batching so the paper's effective batch of 16 utterances is exact:
+    # batch_size x accum_grad == 4 x 4 == 16. Keep the product at 16 when rebalancing.
+    # The AR fine-tune used dynamic_batch_llm with max_frames_in_batch 30000 instead;
+    # switch back to that (and accum_grad 1) only as a deliberate deviation from the
+    # paper recipe if step throughput on H100 is the bottleneck.
+    batch_type: 'static'
+    batch_size: 4
+padding_llm: !name:cosyvoice.dataset.processor.padding_llm
+    use_spk_embedding: False
+
+# dataset processor pipeline
+data_pipeline: [
+    !ref <parquet_opener_llm>,
+    !ref <tokenize>,
+    !ref <filter_speech_token>,
+    !ref <parse_embedding>,
+    !ref <shuffle>,
+    !ref <sort_llm>,
+    !ref <batch_llm>,
+    !ref <padding_llm>,
+]
+
+# delta train conf (paper: AdamW, lr 1e-4 constant after a linear warmup of 2000 steps,
+# effective batch 16, bf16 -> pass --use_amp to train_delta.py).
+# NOTE 'scheduler: warmuplr' is only the placeholder accepted by
+# train_utils.init_optimizer_and_scheduler: train_delta.py swaps the WarmupLR instance
+# for its ConstantWithWarmupLR (linear warmup, then constant base_lr) because WarmupLR
+# decays as inverse sqrt after the warmup and ConstantLR has no warmup, neither of
+# which matches the paper recipe. warmup_steps below feeds the replacement scheduler.
+train_conf:
+    optim: adamw
+    optim_conf:
+        lr: 1e-4
+    scheduler: warmuplr
+    scheduler_conf:
+        warmup_steps: 2000
+    max_epoch: 10 # total steps are not specified in the paper; the AR fine-tune on the
+                  # same 470h flattened in 3-5 epochs, monitor CV loss the same way
+    grad_clip: 5
+    accum_grad: 4 # effective batch = batch_size 4 x accum_grad 4 = 16 (paper)
+    log_interval: 100
+    save_per_step: 1000 # keep step checkpoints for spot instances

@@ -495,6 +495,48 @@ class TestForwardSmoke:
         assert loss_batch == pytest.approx(combined, abs=1e-5)
 
 
+class TestInstructRegion:
+    """instruct_token, when present, is prepended to the text region (visible, no loss).
+
+    The moe_speech (Japanese) parquet carries a per-utterance instruct such as
+    'You are a helpful assistant.<|endofprompt|>' and the AR backbone was
+    fine-tuned with it, so the delta forward must keep it in the layout.
+    """
+
+    def _spy_text_region_lens(self, model, monkeypatch):
+        captured = []
+        orig = model._build_delta_sequence
+
+        def spy(text_emb, speech_emb, speech_token, prompt_len, target_mask):
+            captured.append(text_emb.size(0))
+            return orig(text_emb, speech_emb, speech_token, prompt_len, target_mask)
+
+        monkeypatch.setattr(model, '_build_delta_sequence', spy)
+        return captured
+
+    def test_instruct_prepended_to_text_region(self, tiny_backbone_dir, monkeypatch):
+        import random as _random
+        model = _make_model(tiny_backbone_dir, delta=True)
+        captured = self._spy_text_region_lens(model, monkeypatch)
+        batch = TestForwardSmoke._batch()
+        batch['instruct_token'] = torch.randint(0, VOCAB, (2, 3))
+        batch['instruct_token_len'] = torch.tensor([3, 2], dtype=torch.int32)
+        _random.seed(0)
+        torch.manual_seed(0)
+        out = model.forward(batch, torch.device('cpu'))
+        assert torch.isfinite(out['loss'])
+        assert captured == [3 + 6, 2 + 4]  # per-sample instruct_len + text_len
+
+    def test_without_instruct_text_region_is_text_only(self, tiny_backbone_dir, monkeypatch):
+        import random as _random
+        model = _make_model(tiny_backbone_dir, delta=True)
+        captured = self._spy_text_region_lens(model, monkeypatch)
+        _random.seed(0)
+        torch.manual_seed(0)
+        model.forward(TestForwardSmoke._batch(), torch.device('cpu'))
+        assert captured == [6, 4]
+
+
 class TestARPathDisabled:
     """the inherited AR inference entry points must fail loudly, not with a bare ValueError."""
 
