@@ -36,7 +36,7 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
    - ※ rank (r) は論文に明記なし(要検討事項 → §6)
 2. **因果マスク → 双方向自己注意**に変更
 3. **マスクトークン [M]** を追加。埋め込みは全音声トークン埋め込みの平均で初期化
-4. **Shift operation**: AR の挙動を保持するため、位置 i の隠れ状態が位置 i のトークン(AR では i+1 相当)を予測する形にシフト
+4. **Shift operation**: AR の挙動を保持する。入力側はシフトせず([M] はマスク位置 j 自体に置く)、出力側のみ AR の契約を維持 — hidden[i] が「トークン i+1」の logits を出し、マスク位置 j は hidden[j−1] から読む(Phase 0 の S2 スパイクで一次情報4件により確定。`docs/delta_tts_phase0_verification.md` B-2 参照)
 5. **畳み込みモジュール**: Conformer 様式で各ブロック後に残差接続。depthwise conv + GLU + Swish、kernel size 31、dropout 0.1。局所的な音響構造の捕捉が目的(アブレーションで最大の寄与: WER 2.59% → 1.61%)
 
 ### 2.2 訓練(masked diffusion)
@@ -58,8 +58,8 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 ### 2.4 ターゲット長の決定(NAR ゆえ事前に必要)
 
-ルールベース: `目標音声トークン数 = r_prompt × W_target`、ただし `r_prompt = N_prompt_audio / W_prompt`(プロンプトの「音声トークン数/単語数」比をターゲットテキストに外挿)。
-GT 長を使う設定との差は小さい(WER 1.75% vs GT長条件でも同等、SIM 0.688 vs 0.686)。EOS による動的停止はなく、固定長生成。
+ルールベース: `目標音声トークン数 = r_prompt × W_target`、ただし `r_prompt = N_prompt_audio / W_prompt`(プロンプトの「音声トークン数/文字数」比をターゲットテキストに外挿)。
+**論文の主評価(Table 1: WER 1.75% / SIM 0.688)はこのルールベース長で行われている**(GT 長は ablation 内の比較変種で 1.63% / 0.686。Phase 0 検証で確定)。EOS による動的停止はなく、固定長生成。
 
 ---
 
@@ -143,18 +143,26 @@ GT 長を使う設定との差は小さい(WER 1.75% vs GT長条件でも同等�
 
 | 項目 | 状態 | 対応方針 |
 |---|---|---|
-| LoRA rank | **ほぼ解決**: パラメータ数逆算で r=64(549,888r=35M)。trainable 94M = LoRA 35M + conv 59M の内訳も本文で確認 | S3 スパイクで peft 適用時に 35.19M を実測確認 |
-| 双方向 attention 化 | **ほぼ解決**: transformers 4.51.3 は 4D attention_mask をパススルー(modeling_qwen2.py:698) | S1 スパイクで数値検証。transformers 5.x へのピン解除は厳禁 |
+| LoRA rank | **解決(S3)**: r=64 で trainable=35,192,832 を実測、逆算値と厳密一致 | peft 0.19.1 追加済み。仕様は phase0 doc B-3 |
+| 双方向 attention 化 | **解決(S1)**: 4D additive マスクで双方向化を数値検証済み。flash_attention_2 は不可 → sdpa を使用 | 仕様は phase0 doc B-1。transformers 5.x へのピン解除は厳禁 |
+| Shift operation の厳密な定義 | **解決(S2)**: 入力は無シフト、[M] は位置 j、logits は hidden[j−1] から読む(出力側の右シフト) | 訓練/推論の擬似コードは phase0 doc B-2 |
+| 訓練時の prompt/target 分割 | **解決(S4)**: 同一発話接頭辞 + テキスト非分割(t_prompt 空)方式に決定。アライメント不要 | `--prompt_mode` フラグで代替方式も切替可能に実装 |
 | CosyVoice3 checkpoint | **解決**: `pretrained_models/Fun-CosyVoice3-0.5B` が手元にあり、`llm.pt`(非RL)を使用 | — |
 | 訓練スクリプト等の雛形 | **解決**: `origin/feature/speech-speculative-decoding` に prepare_libritts.py / train_draft.py / eval_ssd.py あり | `git checkout origin/... -- <path>` で取り込み |
-| Shift operation の厳密な定義 | 未解決(要約間で矛盾あり) | S2 スパイク: DiffuLLaMA 実装と論文付録の精読で確定 |
-| 訓練時の prompt/target 分割 | 未解決(論文に記載なし) | S4: 同一発話ランダム接頭辞方式をデフォルト仮説にフラグ化実装 |
+| 推論の長さ決定 | **解決(S2検証)**: 論文の主評価はルールベース長(GT長は ablation 変種) | ルールベース長を標準採用 |
 | 総訓練ステップ数 | 未解決(明記なし) | 損失と検証 WER を見ながら決定。LibriTTS 585h / batch16 でエポック数を仮置き |
 | Seed-TTS test-en の入手 | 手順確認済み | [seed-tts-eval](https://github.com/BytedanceSpeech/seed-tts-eval) 公式プロトコルに従う(WER: Whisper-large-v3、SIM: WavLM-large SV) |
 | RTF の比較条件 | 論文は A100、手元は H100 | 自前 AR ベースライン(S5)との speedup 比で比較 |
 
+残る細部(t の分布、lora_dropout、接頭辞率上限、conv 挿入位置の詳細、H100/bf16 での sdpa 検証)は
+`docs/delta_tts_phase0_verification.md` §C を参照。
+
 ## 7. 次のアクション
 
-1. 論文 PDF の付録(擬似コード・図)を精読し、shift operation とデコーディングの細部を確定する
-2. `peft` 依存を追加(`uv add peft`)し、Phase 1 の実装に着手
-3. 実装が通ったらダミーデータで訓練ループのスモークテスト → vast.ai で Phase 2 へ
+Phase 0(技術スパイク S1〜S4)は完了(2026-07-08、結果は `docs/delta_tts_phase0_verification.md`)。
+`peft==0.19.1` 追加済み。
+
+1. Phase 1 実装に着手: 拡散版 LM クラス(phase0 doc B-1〜B-4 の確定仕様に従う)、
+   `train_delta.py`、信頼度順序デコーディング
+2. 実装が通ったらダミーデータで訓練ループのスモークテスト
+3. vast.ai H100 で S5〜S7(ARベースライン RTF / LibriTTS 疎通 / 長尺一括合成)→ Phase 2 へ
