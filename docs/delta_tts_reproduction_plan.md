@@ -127,12 +127,12 @@ git 履歴 `40f9e32` から復元可能)。
   全経路の平均 RTF 記録を追加(2026-07-09)
 - [x] e2e スモーク: ローカル RTX 4070 Ti SUPER + 日本語FTバックボーンで
   frontend→拡散デコード→flow→hift の全経路 PASS(`scripts/spikes/s9_delta_e2e_smoke.py`)
-- [ ] moe-speech-plus parquet の用意(vast.ai 上で `run.sh` stage 再実行 or 前回シャードの再利用。
-  HF gated のため認証が必要)
-- [ ] delta 訓練: `--checkpoint checkpoints/cosyvoice3_ja/llm.pt`(HF バックアップ:
-  private `ayousanz/cosyvoice3-ja-llm`)、config は上記 yaml
-- [ ] 評価実行: `eval_ja_cer.py --paths ft_kanji delta_kanji --delta_checkpoint ...` で
-  AR ベースライン(ft_kanji 0.085 / base_katakana 0.097)と CER・RTF を比較(ローカル 4070 Ti で可)
+- [x] moe-speech-plus parquet の用意(vast.ai 上で再生成。**波形フリー parquet 523MB を
+  ローカルにアーカイブ済み** → 次回は前処理丸ごとスキップ可)
+- [x] delta 訓練(2026-07-09、H100、~$13): ピークは step 20k-30k、以降過学習 → 54k で停止
+- [x] 評価完了: **delta(平均化 20k-30k)CER 0.106 / RTF 0.945 = AR 比 2.0×速**
+  (ft_kanji 0.0854/RTF 1.89、base_katakana 0.0968)。目標(≤0.10、3×)にわずかに未達。
+  **結果詳細と改善候補: `docs/delta_tts_phase2_results.md`**
 
 (英語での忠実再現フェーズは廃止 — 上記「目的」の注記を参照)
 
@@ -183,11 +183,10 @@ Phase 0(技術スパイク、2026-07-08)と Phase 1(実装、2026-07-09)は完�
 結果は `docs/delta_tts_phase0_verification.md` / `docs/delta_tts_phase1_implementation.md`。
 2026-07-09 に**日本語適用を主目的に再スコープ**(instruct 対応・日本語用 config 追加済み)。
 
-GPU 不要の準備(CLI 配線・from_ar・eval delta 経路・e2e スモーク)は 2026-07-09 完了。
-残タスクは GPU(vast.ai H100)のみ:
+**Phase 2 完了(2026-07-09)**: delta(平均化)= CER 0.106 / 2.0×速。
+結果と運用記録は `docs/delta_tts_phase2_results.md`。
 
-1. moe-speech-plus parquet 用意(run.sh stage 再実行、HF gated 認証)
-2. delta 訓練: `--checkpoint checkpoints/cosyvoice3_ja/llm.pt` +
-   `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml`
-3. 評価(ローカル 4070 Ti で可): `eval_ja_cer.py --paths base_katakana ft_kanji delta_kanji
-   --delta_checkpoint <訓練済み_delta.pt>` → CER / RTF を AR と比較
+次の改善イテレーション候補(同 doc §5):
+1. 低 lr(1e-5)で step 25k から短い追い込み再訓練(parquet アーカイブ利用で ~$3)
+2. 平均化の窓の最適化(SWA 的な近傍平均)
+3. 推論パラメータ探索(T=8、mu、top_p、length_scale)— GPU 不要
