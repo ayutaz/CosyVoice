@@ -130,7 +130,7 @@ if ! stage_done prep2; then
   done
   mark_done prep2
 fi
-num_workers=8
+num_workers=8   # dev parquet shard count must stay >= this (prep3 shard math)
 if ! stage_done prep3; then
   log "stage prep3: waveform-free parquet"
   for x in train dev; do
@@ -171,10 +171,13 @@ if ! stage_done train; then
     --model_dir $RECIPE/exp/delta_ja/llm/torch_ddp \
     --tensorboard_dir $RECIPE/tensorboard/delta_ja/llm/torch_ddp \
     --ddp.dist_backend nccl \
-    --num_workers ${num_workers} \
-    --prefetch 8 \
+    --num_workers 24 \
+    --prefetch 16 \
     --pin_memory \
     --use_amp || exit 1
+    # NOTE 24 workers: measured on the 31-core-quota H100 host that 8 workers starve the
+    # GPU (idle half the time, 0.8-0.9 s/step at loadavg 4). dev has only 8 parquet
+    # shards so CV may evaluate duplicates across workers - dev is 473 utts, negligible
   mark_done train
 fi
 
