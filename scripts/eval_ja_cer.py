@@ -142,10 +142,19 @@ def main():
                         help='trainable-only <name>_delta.pt from train_delta.py, used by the delta_* paths')
     parser.add_argument('--num_steps', type=int, default=None,
                         help='diffusion decoding steps override for the delta_* paths (default: model num_steps=16)')
+    parser.add_argument('--length_scale', type=float, default=None,
+                        help='rule-based target length multiplier for the delta_* paths (default: model length_scale=1.0)')
     parser.add_argument('--paths', nargs='+',
                         default=['base_katakana', 'base_kanji', 'ft_katakana', 'ft_kanji'])
+    parser.add_argument('--sentences_file', default=None,
+                        help='one sentence per line, replaces the built-in SENTENCES (e.g. a holdout set '
+                             'to validate a checkpoint that was selected on the standard 20)')
     args = parser.parse_args()
-    sentences = SENTENCES[:args.num_sentences]
+    if args.sentences_file:
+        with open(args.sentences_file, encoding='utf-8') as f:
+            sentences = [line.strip() for line in f if line.strip()][:args.num_sentences]
+    else:
+        sentences = SENTENCES[:args.num_sentences]
     instruct_prefix = 'You are a helpful assistant.<|endofprompt|>'
 
     # 1. synthesis: base paths first, then the finetuned llm weights, then the delta
@@ -185,7 +194,11 @@ def main():
             from cosyvoice.llm.diffusion_llm import DiffusionCosyVoice3LM
             if args.delta_checkpoint is None:
                 print('WARNING: no --delta_checkpoint, converting untrained (mechanical smoke only)')
-            delta_kwargs = {} if args.num_steps is None else {'num_steps': args.num_steps}
+            delta_kwargs = {}
+            if args.num_steps is not None:
+                delta_kwargs['num_steps'] = args.num_steps
+            if args.length_scale is not None:
+                delta_kwargs['length_scale'] = args.length_scale
             cosyvoice.model.llm = DiffusionCosyVoice3LM.from_ar(
                 cosyvoice.model.llm, delta_checkpoint=args.delta_checkpoint, **delta_kwargs)
             cosyvoice.model.llm.to(cosyvoice.model.device).eval()
