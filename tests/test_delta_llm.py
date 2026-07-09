@@ -548,6 +548,104 @@ class TestARPathDisabled:
             model.inference_bistream()
 
 
+def _make_ar_model(backbone_dir):
+    from cosyvoice.llm.llm import CosyVoice3LM, Qwen2Encoder
+    from cosyvoice.utils.common import ras_sampling
+    torch.manual_seed(7)
+    return CosyVoice3LM(
+        llm_input_size=HIDDEN,
+        llm_output_size=HIDDEN,
+        speech_token_size=SPEECH_TOKEN_SIZE,
+        llm=Qwen2Encoder(backbone_dir),
+        sampling=ras_sampling,
+    )
+
+
+class TestFromAR:
+    """from_ar converts a weight-loaded AR CosyVoice3LM for CLI/eval inference."""
+
+    def test_weights_preserved_and_converted(self, tiny_backbone_dir):
+        ar = _make_ar_model(tiny_backbone_dir)
+        decoder_ref = ar.llm_decoder.weight.detach().clone()
+        speech_emb_ref = ar.speech_embedding.weight.detach().clone()
+        backbone = ar.llm
+        model = DiffusionCosyVoice3LM.from_ar(ar, num_steps=4)
+        assert model.llm is backbone  # backbone reused by reference, not copied
+        assert torch.equal(model.llm_decoder.weight, decoder_ref)
+        assert torch.equal(model.speech_embedding.weight, speech_emb_ref)
+        assert torch.equal(model.mask_emb.detach(), speech_emb_ref[:SPEECH_TOKEN_SIZE].mean(0))
+        assert model.num_steps == 4  # delta kwargs pass through
+        assert not model.training  # eval mode
+        summary = model.trainable_parameter_summary()
+        assert summary['lora'] > 0 and summary['conv'] > 0 and summary['other'] == 0
+
+    def test_decodes_after_conversion(self, tiny_backbone_dir):
+        model = DiffusionCosyVoice3LM.from_ar(_make_ar_model(tiny_backbone_dir), num_steps=2)
+        torch.manual_seed(0)
+        tokens = list(model.inference_diffusion(
+            text=torch.randint(0, VOCAB, (1, 4)), text_len=torch.tensor([4], dtype=torch.int32),
+            prompt_text=torch.zeros(1, 0, dtype=torch.long), prompt_text_len=torch.tensor([0], dtype=torch.int32),
+            prompt_speech_token=torch.zeros(1, 0, dtype=torch.long), prompt_speech_token_len=torch.tensor([0], dtype=torch.int32),
+            embedding=torch.zeros(1, 0), target_len=6))
+        assert len(tokens) == 6
+        assert all(isinstance(t, int) and 0 <= t < SPEECH_TOKEN_SIZE for t in tokens)
+
+    def test_delta_checkpoint_roundtrip(self, tiny_backbone_dir, tmp_path):
+        # save trainable buckets from one converted model (train_delta format), load
+        # them into a second conversion and require identical trainable weights
+        donor = DiffusionCosyVoice3LM.from_ar(_make_ar_model(tiny_backbone_dir))
+        with torch.no_grad():
+            for _name, param in donor.named_parameters():
+                if param.requires_grad:
+                    param.normal_(std=0.02)
+        delta_state = {'lora': {}, 'conv': {}, 'mask_emb': {}, 'epoch': 3, 'step': 500}
+        for name, param in donor.named_parameters():
+            if not param.requires_grad:
+                continue
+            bucket = 'lora' if 'lora_' in name else ('conv' if 'conv_modules' in name else 'mask_emb')
+            delta_state[bucket][name] = param.detach().cpu()
+        ckpt = tmp_path / 'test_delta.pt'
+        torch.save(delta_state, ckpt)
+
+        model = DiffusionCosyVoice3LM.from_ar(_make_ar_model(tiny_backbone_dir), delta_checkpoint=str(ckpt))
+        donor_params = dict(donor.named_parameters())
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert torch.equal(param, donor_params[name]), name
+        step, epoch = 500, 3
+        assert model.load_delta_state(str(ckpt)) == (step, epoch)
+
+    def test_load_delta_state_rejects_non_delta_file(self, tiny_backbone_dir, tmp_path):
+        model = DiffusionCosyVoice3LM.from_ar(_make_ar_model(tiny_backbone_dir))
+        bad = tmp_path / 'not_delta.pt'
+        torch.save({'foo': torch.zeros(1)}, bad)
+        with pytest.raises(RuntimeError, match='not a delta checkpoint'):
+            model.load_delta_state(str(bad))
+
+
+class TestLLMJobDispatch:
+    """CosyVoice3Model.llm_job must route to inference_diffusion for delta llms."""
+
+    def test_llm_job_fills_token_dict(self, tiny_backbone_dir):
+        from cosyvoice.cli.model import CosyVoice3Model
+        model = DiffusionCosyVoice3LM.from_ar(_make_ar_model(tiny_backbone_dir), num_steps=2)
+        wrapper = CosyVoice3Model(llm=model, flow=torch.nn.Identity(), hift=torch.nn.Identity(), fp16=False)
+        wrapper.device = torch.device('cpu')  # the tiny llm lives on CPU even when the box has a GPU
+        wrapper.silent_tokens = []  # keep the yielded count deterministic for the assert
+        uid = 'test-uuid'
+        wrapper.tts_speech_token_dict[uid], wrapper.llm_end_dict[uid] = [], False
+        torch.manual_seed(0)
+        wrapper.llm_job(text=torch.randint(0, VOCAB, (1, 4)),
+                        prompt_text=torch.zeros(1, 0, dtype=torch.long),
+                        llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.long),
+                        llm_embedding=torch.zeros(1, 0),
+                        uuid=uid)
+        assert wrapper.llm_end_dict[uid] is True
+        tokens = wrapper.tts_speech_token_dict[uid]
+        assert len(tokens) == 24  # no-prompt fallback: ceil(6.0 * 4 text tokens)
+        assert all(isinstance(t, int) and 0 <= t < SPEECH_TOKEN_SIZE for t in tokens)
+
+
 class TestConstantWithWarmupLR:
     """train_delta.py swaps WarmupLR for a warmup-then-constant scheduler (paper: lr 1e-4 constant)."""
 

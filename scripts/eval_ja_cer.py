@@ -14,22 +14,34 @@
 # limitations under the License.
 """Japanese CER evaluation: does the finetuned llm read kanji-mixed text directly?
 
-Synthesizes the same sentences through four paths and scores them with whisper ASR
-against the reference text:
+Synthesizes the same sentences through several paths and scores them with whisper ASR
+against the reference text. Per-path average RTF (wall clock / generated audio seconds)
+is reported for freshly synthesized sentences, so AR vs delta speedup comes for free.
 
-  base_katakana : pretrained llm  + ja_frontend katakana conversion (phase 1 path)
-  base_kanji    : pretrained llm  + raw kanji text  (expected failure baseline)
-  ft_katakana   : finetuned llm   + ja_frontend katakana conversion
-  ft_kanji      : finetuned llm   + raw kanji text  (the finetuning target)
+  base_katakana  : pretrained llm  + ja_frontend katakana conversion (phase 1 path)
+  base_kanji     : pretrained llm  + raw kanji text  (expected failure baseline)
+  ft_katakana    : finetuned llm   + ja_frontend katakana conversion
+  ft_kanji       : finetuned llm   + raw kanji text  (the finetuning target)
+  delta_katakana : DELTA-TTS diffusion conversion of the finetuned llm + katakana
+  delta_kanji    : DELTA-TTS diffusion conversion of the finetuned llm + raw kanji
+
+The delta paths convert the finetuned AR llm in place (DiffusionCosyVoice3LM.from_ar
+consumes it), so requested paths always run in base -> ft -> delta order regardless of
+the --paths order. Pass --delta_checkpoint with a trained <name>_delta.pt from
+cosyvoice/bin/train_delta.py; without it the conversion is untrained and only useful
+as a mechanical smoke test.
 
 Usage:
   python scripts/eval_ja_cer.py --model_dir pretrained_models/Fun-CosyVoice3-0.5B \
       --ft_llm checkpoints/cosyvoice3_ja/llm.pt --out_dir eval_out
+  python scripts/eval_ja_cer.py --paths ft_kanji delta_kanji \
+      --delta_checkpoint checkpoints_delta_ja/epoch_4_whole_delta.pt --out_dir eval_out_delta
 """
 import argparse
 import json
 import os
 import sys
+import time
 import unicodedata
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -93,7 +105,7 @@ def cer(ref, hyp):
 def synthesize(cosyvoice, sentences, prompt_wav, out_dir, use_frontend, instruct_prefix, seed):
     from cosyvoice.utils.file_utils import audio_save
     os.makedirs(out_dir, exist_ok=True)
-    paths = []
+    paths, rtfs = [], []
     for i, sentence in enumerate(sentences):
         out_path = os.path.join(out_dir, '{:03d}.wav'.format(i))
         if os.path.exists(out_path):
@@ -103,12 +115,18 @@ def synthesize(cosyvoice, sentences, prompt_wav, out_dir, use_frontend, instruct
         import random as _random
         _random.seed(seed + i)
         text = instruct_prefix + sentence
+        start = time.time()
         chunks = [j['tts_speech'] for j in cosyvoice.inference_cross_lingual(
             text, prompt_wav, stream=False, text_frontend=use_frontend)]
+        elapsed = time.time() - start
         speech = torch.concat(chunks, dim=1) if chunks else torch.zeros(1, 100)
+        speech_sec = speech.shape[1] / cosyvoice.sample_rate
+        if speech_sec > 0:
+            rtfs.append(elapsed / speech_sec)
         audio_save(out_path, speech, cosyvoice.sample_rate)
         paths.append(out_path)
-    return paths
+    avg_rtf = sum(rtfs) / len(rtfs) if rtfs else None
+    return paths, avg_rtf
 
 
 def main():
@@ -120,35 +138,63 @@ def main():
     parser.add_argument('--whisper_model', default='large-v3')
     parser.add_argument('--num_sentences', type=int, default=len(SENTENCES))
     parser.add_argument('--seed', type=int, default=1986)
+    parser.add_argument('--delta_checkpoint', default=None,
+                        help='trainable-only <name>_delta.pt from train_delta.py, used by the delta_* paths')
+    parser.add_argument('--num_steps', type=int, default=None,
+                        help='diffusion decoding steps override for the delta_* paths (default: model num_steps=16)')
     parser.add_argument('--paths', nargs='+',
                         default=['base_katakana', 'base_kanji', 'ft_katakana', 'ft_kanji'])
     args = parser.parse_args()
     sentences = SENTENCES[:args.num_sentences]
     instruct_prefix = 'You are a helpful assistant.<|endofprompt|>'
 
-    # 1. synthesis: base paths first, then swap in the finetuned llm weights
+    # 1. synthesis: base paths first, then the finetuned llm weights, then the delta
+    # conversion (which consumes the finetuned AR llm, so it must come last)
     from cosyvoice.cli.cosyvoice import AutoModel
     cosyvoice = AutoModel(model_dir=args.model_dir)
     plan = {
-        'base_katakana': (False, True),   # (use_ft, use_frontend)
-        'base_kanji': (False, False),
-        'ft_katakana': (True, True),
-        'ft_kanji': (True, False),
+        'base_katakana': ('base', True),   # (llm_mode, use_frontend)
+        'base_kanji': ('base', False),
+        'ft_katakana': ('ft', True),
+        'ft_kanji': ('ft', False),
+        'delta_katakana': ('delta', True),
+        'delta_kanji': ('delta', False),
     }
-    ft_loaded = False
-    for name in args.paths:
-        use_ft, use_frontend = plan[name]
-        if use_ft and not ft_loaded:
-            state = torch.load(args.ft_llm, map_location='cpu', weights_only=True)
-            state = {k: v for k, v in state.items() if k not in ('epoch', 'step')}
-            cosyvoice.model.llm.load_state_dict(state, strict=True)
+    order = list(plan)
+    selected = sorted(args.paths, key=order.index)
+    if selected != args.paths:
+        print('paths reordered to', selected, '(delta conversion is irreversible in-process)')
+
+    def load_ft():
+        state = torch.load(args.ft_llm, map_location='cpu', weights_only=True)
+        state = {k: v for k, v in state.items() if k not in ('epoch', 'step')}
+        cosyvoice.model.llm.load_state_dict(state, strict=True)
+        cosyvoice.model.llm.to(cosyvoice.model.device).eval()
+        print('loaded finetuned llm from', args.ft_llm)
+
+    loaded_mode = 'base'
+    avg_rtfs = {}
+    for name in selected:
+        llm_mode, use_frontend = plan[name]
+        if llm_mode == 'ft' and loaded_mode == 'base':
+            load_ft()
+            loaded_mode = 'ft'
+        elif llm_mode == 'delta' and loaded_mode != 'delta':
+            if loaded_mode == 'base':
+                load_ft()
+            from cosyvoice.llm.diffusion_llm import DiffusionCosyVoice3LM
+            if args.delta_checkpoint is None:
+                print('WARNING: no --delta_checkpoint, converting untrained (mechanical smoke only)')
+            delta_kwargs = {} if args.num_steps is None else {'num_steps': args.num_steps}
+            cosyvoice.model.llm = DiffusionCosyVoice3LM.from_ar(
+                cosyvoice.model.llm, delta_checkpoint=args.delta_checkpoint, **delta_kwargs)
             cosyvoice.model.llm.to(cosyvoice.model.device).eval()
-            ft_loaded = True
-            print('loaded finetuned llm from', args.ft_llm)
+            loaded_mode = 'delta'
+            print('converted llm to DiffusionCosyVoice3LM (delta_checkpoint={})'.format(args.delta_checkpoint))
         print('=== synthesizing', name, '===')
-        synthesize(cosyvoice, sentences, args.prompt_wav,
-                   os.path.join(args.out_dir, name), use_frontend, instruct_prefix, args.seed)
-    del cosyvoice
+        _, avg_rtfs[name] = synthesize(cosyvoice, sentences, args.prompt_wav,
+                                       os.path.join(args.out_dir, name), use_frontend, instruct_prefix, args.seed)
+    cosyvoice = None  # release the model before whisper loads (del would unbind the load_ft closure cell)  # noqa: F841
     torch.cuda.empty_cache()
 
     # 2. ASR + CER
@@ -156,21 +202,23 @@ def main():
     print('loading whisper', args.whisper_model)
     asr = whisper.load_model(args.whisper_model)
     report = {}
-    for name in args.paths:
+    for name in selected:
         rows = []
         for i, sentence in enumerate(sentences):
             wav = os.path.join(args.out_dir, name, '{:03d}.wav'.format(i))
             hyp = asr.transcribe(wav, language='ja', temperature=0.0)['text']
             rows.append({'ref': sentence, 'hyp': hyp, 'cer': cer(sentence, hyp)})
         avg = sum(r['cer'] for r in rows) / len(rows)
-        report[name] = {'avg_cer': avg, 'rows': rows}
+        report[name] = {'avg_cer': avg, 'avg_rtf': avg_rtfs.get(name), 'rows': rows}
         print('{}: avg CER {:.4f}'.format(name, avg))
 
     with open(os.path.join(args.out_dir, 'report.json'), 'w', encoding='utf-8') as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     print('\n=== SUMMARY ===')
-    for name in args.paths:
-        print('{:16s} avg CER {:.4f}'.format(name, report[name]['avg_cer']))
+    for name in selected:
+        rtf = report[name]['avg_rtf']
+        print('{:16s} avg CER {:.4f}   avg RTF {}'.format(
+            name, report[name]['avg_cer'], '{:.3f}'.format(rtf) if rtf is not None else 'n/a (cached wavs)'))
     print('report saved to', os.path.join(args.out_dir, 'report.json'))
 
 

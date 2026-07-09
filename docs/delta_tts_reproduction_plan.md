@@ -121,14 +121,18 @@ git 履歴 `40f9e32` から復元可能)。
   (moe_speech の波形フリー llm パイプライン + instruct 列 + 論文の訓練レシピ)
 - [x] instruct 領域対応: 日本語 FT は全発話 `You are a helpful assistant.<|endofprompt|>` 付きで
   学習されているため、delta forward が instruct を text 領域の先頭に連結(可視・損失対象外)
+- [x] `cli/model.py` への `inference_diffusion` 配線(llm_job の duck-typing dispatch)と
+  変換ヘルパー `DiffusionCosyVoice3LM.from_ar()`(2026-07-09)
+- [x] `scripts/eval_ja_cer.py` に delta_katakana / delta_kanji 経路 + `--delta_checkpoint` +
+  全経路の平均 RTF 記録を追加(2026-07-09)
+- [x] e2e スモーク: ローカル RTX 4070 Ti SUPER + 日本語FTバックボーンで
+  frontend→拡散デコード→flow→hift の全経路 PASS(`scripts/spikes/s9_delta_e2e_smoke.py`)
 - [ ] moe-speech-plus parquet の用意(vast.ai 上で `run.sh` stage 再実行 or 前回シャードの再利用。
   HF gated のため認証が必要)
-- [ ] GPU 検証 S5-S7: **AR ベースライン = 日本語 FT モデル**の RTF 計測、長尺一括合成確認
 - [ ] delta 訓練: `--checkpoint checkpoints/cosyvoice3_ja/llm.pt`(HF バックアップ:
   private `ayousanz/cosyvoice3-ja-llm`)、config は上記 yaml
-- [ ] `cli/model.py` / `cli/cosyvoice.py` への `inference_diffusion` 配線
-- [ ] 評価: `scripts/eval_ja_cer.py` に delta 経路(delta_kanji 等)を追加し、
-  AR 4 経路のベースライン(ft_kanji 0.085 / base_katakana 0.097)と CER・RTF を比較
+- [ ] 評価実行: `eval_ja_cer.py --paths ft_kanji delta_kanji --delta_checkpoint ...` で
+  AR ベースライン(ft_kanji 0.085 / base_katakana 0.097)と CER・RTF を比較(ローカル 4070 Ti で可)
 
 (英語での忠実再現フェーズは廃止 — 上記「目的」の注記を参照)
 
@@ -179,8 +183,11 @@ Phase 0(技術スパイク、2026-07-08)と Phase 1(実装、2026-07-09)は完�
 結果は `docs/delta_tts_phase0_verification.md` / `docs/delta_tts_phase1_implementation.md`。
 2026-07-09 に**日本語適用を主目的に再スコープ**(instruct 対応・日本語用 config 追加済み)。
 
-1. `cli/model.py` / `cli/cosyvoice.py` への `inference_diffusion` 配線(ローカルで可能)
-2. vast.ai H100: moe-speech-plus parquet 用意 → 日本語 FT モデルの AR ベースライン RTF 計測 →
-   delta 訓練(`--checkpoint checkpoints/cosyvoice3_ja/llm.pt` +
-   `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml`)
-3. `eval_ja_cer.py` に delta 経路を追加して CER / RTF を AR と比較
+GPU 不要の準備(CLI 配線・from_ar・eval delta 経路・e2e スモーク)は 2026-07-09 完了。
+残タスクは GPU(vast.ai H100)のみ:
+
+1. moe-speech-plus parquet 用意(run.sh stage 再実行、HF gated 認証)
+2. delta 訓練: `--checkpoint checkpoints/cosyvoice3_ja/llm.pt` +
+   `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml`
+3. 評価(ローカル 4070 Ti で可): `eval_ja_cer.py --paths base_katakana ft_kanji delta_kanji
+   --delta_checkpoint <訓練済み_delta.pt>` → CER / RTF を AR と比較

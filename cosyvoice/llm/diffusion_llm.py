@@ -398,6 +398,64 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
                 summary['other'] += param.numel()
         return summary
 
+    def load_delta_state(self, delta_checkpoint: str):
+        """Load a trainable-only delta checkpoint (train_delta.save_delta_checkpoint format).
+
+        The file holds {'lora': {...}, 'conv': {...}, 'mask_emb': {...}} state
+        buckets plus 'epoch'/'step'. Call AFTER apply_lora()/attach_conv_modules()
+        so the parameter names exist. Returns (step, epoch) for training resume.
+        """
+        delta_state = torch.load(delta_checkpoint, map_location='cpu')
+        flat_state_dict = {}
+        for bucket in ('lora', 'conv', 'mask_emb'):
+            flat_state_dict.update(delta_state.get(bucket, {}))
+        if len(flat_state_dict) == 0:
+            raise RuntimeError('{} holds no lora/conv/mask_emb buckets, not a delta checkpoint'.format(delta_checkpoint))
+        _, unexpected = self.load_state_dict(flat_state_dict, strict=False)
+        if len(unexpected) > 0:
+            raise RuntimeError('delta checkpoint {} has keys the converted model does not: {} (was the '
+                               'conversion order or lora/conv config changed?)'.format(delta_checkpoint, unexpected[:3]))
+        return delta_state.get('step', 0), delta_state.get('epoch', -1)
+
+    @classmethod
+    def from_ar(cls, ar_llm: CosyVoice3LM, delta_checkpoint: Optional[str] = None, **delta_kwargs) -> 'DiffusionCosyVoice3LM':
+        """Convert a weight-loaded AR CosyVoice3LM into a diffusion LM for inference.
+
+        Intended for the CLI / evaluation flow where an AR model (pretrained or
+        Japanese fine-tuned) is already built and loaded:
+
+            cosyvoice = AutoModel(model_dir=...)
+            cosyvoice.model.llm.load_state_dict(ja_state, strict=True)  # optional FT swap
+            cosyvoice.model.llm = DiffusionCosyVoice3LM.from_ar(
+                cosyvoice.model.llm, delta_checkpoint='.../epoch_X_delta.pt')
+
+        CONSUMES ar_llm: the Qwen2 backbone module is reused by reference and
+        LoRA/conv-wrapped in place, so the AR instance must not be used again.
+        Weights are copied before attach_conv_modules() nests the backbone keys
+        (same ordering rule as train_delta.build_delta_model). Without a
+        delta_checkpoint the conversion is identity-preserving at first
+        (zero-init LoRA-B / conv pointwise_conv2) but decoding quality requires
+        a trained delta. The model is frozen and set to eval mode.
+        """
+        model = cls(
+            llm_input_size=ar_llm.llm_input_size,
+            llm_output_size=ar_llm.llm_output_size,
+            speech_token_size=ar_llm.speech_token_size,
+            llm=ar_llm.llm,
+            sampling=ar_llm.sampling,
+            **delta_kwargs,
+        )
+        missing, unexpected = model.load_state_dict(ar_llm.state_dict(), strict=False)
+        assert missing == ['mask_emb'], 'unexpected missing keys converting from AR: {}'.format(missing)
+        assert len(unexpected) == 0, 'AR state has keys the diffusion model does not: {}'.format(unexpected[:3])
+        model.apply_lora()
+        model.attach_conv_modules()
+        model.init_mask_embedding()
+        if delta_checkpoint is not None:
+            model.load_delta_state(delta_checkpoint)
+        model.freeze_for_delta()
+        return model.eval()
+
     def _build_delta_sequence(self, text_emb: torch.Tensor, speech_emb: torch.Tensor, speech_token: torch.Tensor,
                               prompt_len: int, target_mask: torch.Tensor):
         """Build one unistream training sequence (S4: same-utterance prefix prompt).

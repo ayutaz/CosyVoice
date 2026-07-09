@@ -139,16 +139,8 @@ class DeltaExecutor(Executor):
 
 def load_delta_checkpoint(model, delta_checkpoint):
     """Load a trainable-only delta checkpoint saved by save_delta_checkpoint. Call after conversion."""
-    delta_state = torch.load(delta_checkpoint, map_location='cpu')
-    flat_state_dict = {}
-    for bucket in ['lora', 'conv', 'mask_emb']:
-        flat_state_dict.update(delta_state.get(bucket, {}))
-    missing, unexpected = model.load_state_dict(flat_state_dict, strict=False)
-    if len(unexpected) > 0:
-        logging.warning('unexpected keys in delta checkpoint {}: {}'.format(delta_checkpoint, unexpected))
-    logging.info('loaded delta checkpoint {} ({} tensors)'.format(delta_checkpoint, len(flat_state_dict)))
-    start_step = delta_state.get('step', 0)
-    start_epoch = delta_state.get('epoch', -1)
+    start_step, start_epoch = model.load_delta_state(delta_checkpoint)
+    logging.info('loaded delta checkpoint {} (resume step {} epoch {})'.format(delta_checkpoint, start_step, start_epoch))
     return start_step, start_epoch
 
 

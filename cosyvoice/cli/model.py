@@ -111,14 +111,17 @@ class CosyVoiceModel:
                                                               prompt_speech_token_len=torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(self.device),
                                                               embedding=llm_embedding.to(self.device))
             else:
-                token_generator = self.llm.inference(text=text.to(self.device),
-                                                     text_len=torch.tensor([text.shape[1]], dtype=torch.int32).to(self.device),
-                                                     prompt_text=prompt_text.to(self.device),
-                                                     prompt_text_len=torch.tensor([prompt_text.shape[1]], dtype=torch.int32).to(self.device),
-                                                     prompt_speech_token=llm_prompt_speech_token.to(self.device),
-                                                     prompt_speech_token_len=torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(self.device),
-                                                     embedding=llm_embedding.to(self.device),
-                                                     uuid=uuid)
+                # DELTA-TTS diffusion LMs replace AR decoding with confidence-ordered
+                # parallel unmasking; the generator contract (yield token ints) is the same
+                llm_inference = getattr(self.llm, 'inference_diffusion', None) or self.llm.inference
+                token_generator = llm_inference(text=text.to(self.device),
+                                                text_len=torch.tensor([text.shape[1]], dtype=torch.int32).to(self.device),
+                                                prompt_text=prompt_text.to(self.device),
+                                                prompt_text_len=torch.tensor([prompt_text.shape[1]], dtype=torch.int32).to(self.device),
+                                                prompt_speech_token=llm_prompt_speech_token.to(self.device),
+                                                prompt_speech_token_len=torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(self.device),
+                                                embedding=llm_embedding.to(self.device),
+                                                uuid=uuid)
             for i in token_generator:
                 if i in self.silent_tokens:
                     cur_silent_token_num += 1

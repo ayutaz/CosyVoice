@@ -86,13 +86,24 @@ parquet リストは `examples/moe_speech/cosyvoice3/run.sh` の stage で生成
   チェックポイントは full state_dict と trainable のみの分離保存の両方
 - CPU でも訓練ステップが動く(forward 内で device を正規化。GPU 挙動は不変)
 
-## 4. 推論の暫定仕様(Phase 2 で CLI 統合予定)
+## 4. 推論と CLI 統合(2026-07-09 配線済み)
 
+- **CLI 配線**: `CosyVoice3Model.llm_job`(cli/model.py)が llm に `inference_diffusion` が
+  あればそれを使う(duck-typing、AR モデルは従来どおり)。`AutoModel` → `inference_cross_lingual`
+  等の既存 API がそのまま使える
+- **変換ヘルパー**: `DiffusionCosyVoice3LM.from_ar(ar_llm, delta_checkpoint=..., **delta_kwargs)` —
+  ロード済み AR モデル(日本語FT等)をその場で拡散版に変換(AR インスタンスは消費される)。
+  `load_delta_state()` で train_delta の `<name>_delta.pt` を読み込み
+- **e2e スモーク**: `scripts/spikes/s9_delta_e2e_smoke.py` — ローカル RTX 4070 Ti SUPER +
+  日本語FTバックボーンで全経路 PASS(AR 参照: audio 4.24s / RTF 2.23、
+  未訓練 delta T=4: audio 5.52s / RTF 0.49。※未訓練・音声長も異なるため参考値)
 - ルールベース長: `target_len = ceil(len(prompt_speech)/len(prompt_text_tokens) × len(text_tokens) × length_scale)`、
-  `max_token_text_ratio` で上限クランプ。**トークン数比で代用中**(論文は文字数基準。CLI 統合時に置換)
-- プロンプト片側のみ空の場合はフォールバック定数比 6.0(docstring に明記)
-- `cli/model.py` / `cli/cosyvoice.py` への配線は未実施(Phase 2)。AR 経路を誤って呼ぶと
-  明示的な NotImplementedError
+  `max_token_text_ratio` で上限クランプ。トークン数比(日本語では Qwen トークン ≈ 文字なので
+  論文の文字数基準の良い近似)。プロンプト片側のみ空はフォールバック定数比 6.0
+- **評価**: `scripts/eval_ja_cer.py` に `delta_katakana` / `delta_kanji` 経路と
+  `--delta_checkpoint` / `--num_steps` を追加。全経路で平均 RTF も report.json に記録される
+  (AR vs delta の speedup 計測はこれで完結)。delta 変換は不可逆なので経路は
+  base → ft → delta の順に自動整列
 
 ## 5. 品質保証
 
