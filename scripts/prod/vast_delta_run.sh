@@ -158,7 +158,7 @@ fi
 if ! stage_done train; then
   log "stage train: delta conversion on the japanese FT backbone"
   export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-  torchrun --nnodes=1 --nproc_per_node=1 \
+  uv run torchrun --nnodes=1 --nproc_per_node=1 \
       --rdzv_id=1986 --rdzv_backend="c10d" --rdzv_endpoint="localhost:1234" \
     $REPO/cosyvoice/bin/train_delta.py \
     --train_engine torch_ddp \
