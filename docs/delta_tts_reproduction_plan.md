@@ -90,15 +90,18 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 
 ## 4. 再現実験で「何をしたいのか」
 
-### 目的(2026-07-09 再スコープ: 日本語適用が主目的)
+### 目的(2026-07-09 再スコープ: 日本語適用のみ。英語再現は対象外)
 
-1. **主目的 — 日本語モデルへの適用**: 日本語 FT 済み CosyVoice3(`checkpoints/cosyvoice3_ja/llm.pt`、
+1. **日本語モデルへの適用**: 日本語 FT 済み CosyVoice3(`checkpoints/cosyvoice3_ja/llm.pt`、
    moe-speech-plus 470h で漢字直接入力 CER 0.085 を達成済み。`docs/japanese_finetuning_report.md`)を
    凍結バックボーンとして delta 変換し、**日本語ゼロショット TTS の高速化(3〜4× 目標)と
    CER 維持(ft_kanji 0.085 → 0.10 以下を目安)**が成立するか検証する
-2. (オプション)英語忠実再現: LibriTTS + 公式 checkpoint で論文値(WER 1.75%、RTF 0.144)との
-   突き合わせが必要になった場合の参考パス
-3. 副次的に、既存の SSD (speculative decoding) ブランチとの速度・品質トレードオフ比較の土台を作る
+2. 副次的に、既存の SSD (speculative decoding) ブランチとの速度・品質トレードオフ比較の土台を作る
+
+※ 英語(LibriTTS)での論文忠実再現はユーザー判断で**スコープ外**とした(2026-07-09)。
+論文値(WER 1.75% 等)は §1〜3 の参照情報としてのみ保持する。英語用に作成した
+`examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml` は削除済み(必要になれば
+git 履歴 `40f9e32` から復元可能)。
 
 ### スコープ(Phase 分割)
 
@@ -127,11 +130,7 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 - [ ] 評価: `scripts/eval_ja_cer.py` に delta 経路(delta_kanji 等)を追加し、
   AR 4 経路のベースライン(ft_kanji 0.085 / base_katakana 0.097)と CER・RTF を比較
 
-**Phase 3(オプション): 英語での忠実再現**
-- [ ] LibriTTS 585h の準備(`origin/feature/speech-speculative-decoding` の
-  `scripts/prepare_libritts.py` が流用候補)+ 公式 checkpoint で訓練
-- [ ] Seed-TTS test-en で WER/SIM/RTF 評価 → 論文表1・表5と突き合わせ
-- 設定は作成済み: `examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml`
+(英語での忠実再現フェーズは廃止 — 上記「目的」の注記を参照)
 
 ### 本リポジトリでの主な変更対象
 
@@ -140,7 +139,7 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 | `cosyvoice/llm/llm.py` | 拡散版 LM クラス追加(または新規 `cosyvoice/llm/diffusion_llm.py`) |
 | `cosyvoice/cli/model.py` | `CosyVoice3Model` に拡散推論パスを追加 |
 | `cosyvoice/cli/cosyvoice.py` | API から拡散モードを選択可能に |
-| `examples/libritts/cosyvoice3/conf/` | `cosyvoice3_delta.yaml`(仮)追加 |
+| `examples/moe_speech/cosyvoice3/conf/` | `cosyvoice3_delta.yaml` 追加(日本語 delta 訓練用)|
 | `cosyvoice/bin/` | `train_delta.py`(masked diffusion 訓練) |
 | `scripts/` | 評価スクリプト(WER/SIM/RTF、`eval_ssd.py` が参考になる) |
 
@@ -154,8 +153,6 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 - **速度**: 音声長ビン(0-3s / 3-5s / 5-10s)別の speedup を計測(論文表3と同形式)。
   ベースラインは同一ハードウェアでの日本語 FT AR モデル
 - アブレーション(余力があれば): naive変換 → +時間シフト → +conv の3点で CER 変化を確認
-- **英語(オプション、Phase 3)**: Seed-TTS test-en(1,088件)で WER(Whisper-large-v3)/
-  SIM(WavLM-large ECAPA-TDNN)/ UTMOS / RTF。論文の表1を再現目標とする
 
 ## 6. 未確定事項・リスク
 
@@ -170,8 +167,7 @@ AR より速いだけでなく WER も改善(左→右の誤り伝播・ハル�
 | CosyVoice3 checkpoint | **解決**: `pretrained_models/Fun-CosyVoice3-0.5B` が手元にあり、`llm.pt`(非RL)を使用 | — |
 | 訓練スクリプト等の雛形 | **解決**: `origin/feature/speech-speculative-decoding` に prepare_libritts.py / train_draft.py / eval_ssd.py あり | `git checkout origin/... -- <path>` で取り込み |
 | 推論の長さ決定 | **解決(S2検証)**: 論文の主評価はルールベース長(GT長は ablation 変種) | ルールベース長を標準採用 |
-| 総訓練ステップ数 | 未解決(明記なし) | 損失と検証 WER を見ながら決定。LibriTTS 585h / batch16 でエポック数を仮置き |
-| Seed-TTS test-en の入手 | 手順確認済み | [seed-tts-eval](https://github.com/BytedanceSpeech/seed-tts-eval) 公式プロトコルに従う(WER: Whisper-large-v3、SIM: WavLM-large SV) |
+| 総訓練ステップ数 | 未解決(論文に明記なし) | CV loss を見ながら決定。日本語 AR FT は同じ 470h で 3-5 エポックで平坦化した実績を目安に |
 | RTF の比較条件 | 論文は A100、手元は H100 | 自前 AR ベースライン(S5)との speedup 比で比較 |
 
 残る細部(t の分布、lora_dropout、接頭辞率上限、conv 挿入位置の詳細、H100/bf16 での sdpa 検証)は

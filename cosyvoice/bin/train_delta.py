@@ -31,13 +31,13 @@ every save additionally writes a small `<name>_delta.pt` holding only the traina
 delta parameters (lora / conv / mask_emb). Resume from it with --delta_checkpoint on
 top of the original --checkpoint llm.pt.
 
-Usage:
+Usage (Japanese delta training on top of the fine-tuned backbone):
     python cosyvoice/bin/train_delta.py \
         --train_engine torch_ddp --ddp.dist_backend gloo --model llm \
-        --config examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml \
-        --train_data data/libritts/train.list --cv_data data/libritts/cv.list \
-        --model_dir ./checkpoints_delta \
-        --checkpoint pretrained_models/Fun-CosyVoice3-0.5B/llm.pt \
+        --config examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml \
+        --train_data data/moe_speech/train.data.list --cv_data data/moe_speech/dev.data.list \
+        --model_dir ./checkpoints_delta_ja \
+        --checkpoint checkpoints/cosyvoice3_ja/llm.pt \
         --qwen_pretrain_path pretrained_models/Fun-CosyVoice3-0.5B/CosyVoice-BlankEN \
         --num_workers 1 --use_amp
 """

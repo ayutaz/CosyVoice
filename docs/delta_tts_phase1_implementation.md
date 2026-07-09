@@ -9,8 +9,7 @@ Phase 1(拡散版 LM・訓練スクリプト・推論デコーディングの実
 |---|---|
 | `cosyvoice/llm/diffusion_llm.py` | コア実装(下記 §2) |
 | `cosyvoice/bin/train_delta.py` | 訓練エントリポイント(§3) |
-| `examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml` | 訓練設定(英語 LibriTTS、オプション経路) |
-| `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml` | **訓練設定(日本語 moe-speech-plus、主経路)** |
+| `examples/moe_speech/cosyvoice3/conf/cosyvoice3_delta.yaml` | **訓練設定(日本語 moe-speech-plus)** |
 | `tests/test_delta_llm.py` | ユニットテスト 48 件(§5) |
 | `scripts/spikes/s8_delta_smoke.py` | 0.5B 実機スモーク(再実行可能) |
 
@@ -59,7 +58,7 @@ Phase 1(拡散版 LM・訓練スクリプト・推論デコーディングの実
 
 ## 3. 訓練(`train_delta.py` + `cosyvoice3_delta.yaml`)
 
-**日本語(主経路)** — 凍結バックボーンは日本語 FT 済み llm、データは moe_speech parquet:
+凍結バックボーンは日本語 FT 済み llm、データは moe_speech parquet:
 
 ```bash
 PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
@@ -75,17 +74,8 @@ PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
 build_delta_model は AR checkpoint から訓練位置を継承しない(unexpected キーとして無害にスキップ)。
 parquet リストは `examples/moe_speech/cosyvoice3/run.sh` の stage で生成(HF gated 認証が必要)。
 
-**英語(オプション)**:
-
-```bash
-PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
-    --train_engine torch_ddp --ddp.dist_backend gloo --model llm \
-    --config examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml \
-    --train_data data/libritts/train.list --cv_data data/libritts/cv.list \
-    --model_dir ./checkpoints_delta \
-    --checkpoint pretrained_models/Fun-CosyVoice3-0.5B/llm.pt \
-    --qwen_pretrain_path pretrained_models/Fun-CosyVoice3-0.5B/CosyVoice-BlankEN
-```
+※ 英語(LibriTTS)用の設定 `examples/libritts/cosyvoice3/conf/cosyvoice3_delta.yaml` は
+2026-07-09 のスコープ変更(英語再現は対象外)で削除。必要になれば git 履歴 `40f9e32` から復元可能。
 
 - **スケジューラ**: 論文の「warmup 2000 → lr=1e-4 定数」を再現するため、train_delta.py 内に
   `ConstantWithWarmupLR` を定義し、`init_optimizer_and_scheduler` が返す WarmupLR
@@ -124,6 +114,5 @@ PYTHONPATH=third_party/Matcha-TTS:. uv run python cosyvoice/bin/train_delta.py \
 3. instruct(t_inst)対応済み: batch の `instruct_token` を text 領域へ連結(日本語 FT は全発話
    `You are a helpful assistant.<|endofprompt|>` 付きで学習されているため必須)。推論では instruct は
    text トークン列の中に入って届く(AR の cross-lingual 経路と同じ)ため専用引数は不要
-4. 訓練データ準備は Phase 2: 日本語は moe_speech parquet(vast.ai で run.sh 再実行 or 前回シャード再利用)、
-   英語(オプション)は LibriTTS の speech_tokenizer_v3 抽出
+4. 訓練データ準備は Phase 2: moe_speech parquet(vast.ai で run.sh 再実行 or 前回シャード再利用)
 5. 'Sliding Window Attention is enabled but not implemented' 警告は既存 AR ロードと同じで無害
