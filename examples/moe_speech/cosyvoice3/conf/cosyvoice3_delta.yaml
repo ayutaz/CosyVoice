@@ -92,12 +92,12 @@ sort_llm: !name:cosyvoice.dataset.processor.sort_by_speech_token
     sort_size: 500  # sort_size should be less than shuffle_size
 batch_llm: !name:cosyvoice.dataset.processor.batch
     # static batching so the paper's effective batch of 16 utterances is exact:
-    # batch_size x accum_grad == 4 x 4 == 16. Keep the product at 16 when rebalancing.
-    # The AR fine-tune used dynamic_batch_llm with max_frames_in_batch 30000 instead;
-    # switch back to that (and accum_grad 1) only as a deliberate deviation from the
-    # paper recipe if step throughput on H100 is the bottleneck.
+    # batch_size x accum_grad == 16 x 1 == 16. Keep the product at 16 when rebalancing
+    # (e.g. 4 x 4 on 24GB cards). The AR fine-tune used dynamic_batch_llm with
+    # max_frames_in_batch 30000 instead; switch back to that (and accum_grad 1) only as
+    # a deliberate deviation from the paper recipe if step throughput is the bottleneck.
     batch_type: 'static'
-    batch_size: 4
+    batch_size: 16
 padding_llm: !name:cosyvoice.dataset.processor.padding_llm
     use_spk_embedding: False
 
@@ -127,9 +127,10 @@ train_conf:
     scheduler: warmuplr
     scheduler_conf:
         warmup_steps: 2000
-    max_epoch: 10 # total steps are not specified in the paper; the AR fine-tune on the
-                  # same 470h flattened in 3-5 epochs, monitor CV loss the same way
+    max_epoch: 5 # total steps are not specified in the paper; the AR fine-tune on the
+                 # same 470h flattened in 3-5 epochs (17,616 steps), monitor CV loss the
+                 # same way and extend via --delta_checkpoint resume if still improving
     grad_clip: 5
-    accum_grad: 4 # effective batch = batch_size 4 x accum_grad 4 = 16 (paper)
+    accum_grad: 1 # effective batch = batch_size 16 x accum_grad 1 = 16 (paper)
     log_interval: 100
     save_per_step: 1000 # keep step checkpoints for spot instances
