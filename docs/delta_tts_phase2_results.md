@@ -62,14 +62,13 @@
 
 評価音声: `eval_out_delta_final/`(3経路×20文)、`eval_out_delta_avg20/`(平均化版)、report.json 付き。
 
-## 5. 次の改善候補(優先度順)
+## 5. 次の改善候補(優先度順)と実施状況
 
-1. **低 lr での短い追い込み**: `--delta_checkpoint`(25k)+ lr 1e-5 で数千ステップ再訓練
-   (SWA 的な仕上げ。parquet アーカイブがあるため GPU 費用 ~$2-3 / 30分で試せる)
-2. **平均化の窓の最適化**: 現在は 20k/25k/30k の3点。1000 ステップ刻みの近傍平均(真の SWA)を
-   ローカルで探索(チェックポイントは手元にある範囲で)
-3. **推論パラメータ探索**(GPU 不要・ローカルのみ): T=16→8(LM 計算半減)、mu、top_p、
-   length_scale の CER/RTF トレードオフ
-4. RTF 深掘り: LM 単体 RTF の分離計測、fp16 推論、flow/hift 側の高速化(AR と共通なので
-   speedup 比は不変だが絶対 RTF が下がる)
+1. **低 lr での短い追い込み** → **実行済み**(lr 1e-5、25k から1エポック。結果は
+   `docs/delta_tts_speed_quality_report.md` に追記)
+2. **推論パラメータ探索(T スイープ)** → **実行済み。T=8 が最適: CER 0.0908 / E2E 2.52× /
+   LM 5.27×(目標 CER≤0.10 達成)**。詳細計測は `docs/delta_tts_speed_quality_report.md`
+3. 平均化の窓の最適化(refine 後の 500 ステップ刻みチェックポイントで SWA 窓探索)
+4. RTF 深掘り: fp16 推論、flow/hift 側の高速化(AR と共通なので speedup 比は不変だが
+   絶対 RTF が下がる)
 5. 音素バランスの良い訓練データ拡張(8000h 計画と合流)
