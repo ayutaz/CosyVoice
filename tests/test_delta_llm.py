@@ -645,6 +645,34 @@ class TestLLMJobDispatch:
         assert len(tokens) == 24  # no-prompt fallback: ceil(6.0 * 4 text tokens)
         assert all(isinstance(t, int) and 0 <= t < SPEECH_TOKEN_SIZE for t in tokens)
 
+    def test_llm_job_ar_fallback_uses_inference(self, tiny_backbone_dir, monkeypatch):
+        # a plain AR llm has no inference_diffusion attribute: the dispatch must fall
+        # back to .inference, i.e. existing CosyVoice3 usage is unaffected by the wiring
+        from cosyvoice.cli.model import CosyVoice3Model
+        ar = _make_ar_model(tiny_backbone_dir)
+        assert not hasattr(ar, 'inference_diffusion')
+        called = {}
+
+        def fake_inference(**kwargs):
+            called['kwargs'] = kwargs
+            yield 5
+            yield 7
+
+        monkeypatch.setattr(ar, 'inference', fake_inference)
+        wrapper = CosyVoice3Model(llm=ar, flow=torch.nn.Identity(), hift=torch.nn.Identity(), fp16=False)
+        wrapper.device = torch.device('cpu')
+        wrapper.silent_tokens = []
+        uid = 'test-uuid-ar'
+        wrapper.tts_speech_token_dict[uid], wrapper.llm_end_dict[uid] = [], False
+        wrapper.llm_job(text=torch.randint(0, VOCAB, (1, 4)),
+                        prompt_text=torch.zeros(1, 0, dtype=torch.long),
+                        llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.long),
+                        llm_embedding=torch.zeros(1, 0),
+                        uuid=uid)
+        assert wrapper.tts_speech_token_dict[uid] == [5, 7]
+        assert wrapper.llm_end_dict[uid] is True
+        assert called['kwargs']['uuid'] == uid  # routed through .inference with the AR signature
+
 
 class TestConstantWithWarmupLR:
     """train_delta.py swaps WarmupLR for a warmup-then-constant scheduler (paper: lr 1e-4 constant)."""
