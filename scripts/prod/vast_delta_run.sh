@@ -43,7 +43,8 @@ mark_done() { touch $MARK/$1.done; log "stage $1 done"; }
 
 # ---------------------------------------------------------------- 0. environment
 if ! stage_done env; then
-  log "stage env: uv + repo clone"
+  log "stage env: apt + uv + repo clone"
+  apt-get update -y && apt-get install -y git curl ca-certificates iproute2 build-essential || exit 1
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh || exit 1
   export PATH="$HOME/.local/bin:$PATH"
   if [ ! -d $REPO ]; then
