@@ -57,5 +57,5 @@ pretrained_models/*
 # local training artifacts (finetuned checkpoints, CER eval outputs)
 checkpoints/
 eval_out/
-eval_out_delta*/
+eval_out*/
 checkpoints_delta*/
