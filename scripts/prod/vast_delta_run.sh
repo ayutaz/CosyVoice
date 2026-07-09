@@ -56,6 +56,16 @@ fi
 export PATH="$HOME/.local/bin:$PATH"
 cd $REPO
 
+# host-driver fix: the nvidia/cuda:12.8 image ships a compat libcuda (570.x) that fails
+# with CUDA error 803 on hosts running older kernel drivers (e.g. 555 / CUDA 12.5);
+# the host driver itself runs cu128 wheels fine, so disable the compat layer
+if [ -d /usr/local/cuda-12.8/compat ]; then
+  mv /usr/local/cuda-12.8/compat /usr/local/cuda-12.8/compat.disabled && ldconfig
+  echo "disabled cuda-12.8 compat layer (error 803 fix)"
+fi
+# onnxruntime-gpu dlopens cudnn/cublas at runtime; point it at the wheels torch bundles
+export LD_LIBRARY_PATH=$(echo $REPO/.venv/lib/python*/site-packages/nvidia/*/lib | tr ' ' ':')${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
 # network sanity: sample RX rate for 10s during a warmup download (ops note: advertised
 # bandwidth cannot be trusted; a slow host should be destroyed and replaced)
 if ! stage_done netcheck; then
