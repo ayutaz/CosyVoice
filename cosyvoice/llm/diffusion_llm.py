@@ -287,6 +287,7 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
             mu: float = 0.3,
             top_p: float = 0.8,
             length_scale: float = 1.0,
+            tokens_per_mora: float = 4.708,
     ):
         super().__init__(llm_input_size, llm_output_size, speech_token_size, llm, sampling,
                          length_normalized_loss, lsm_weight, mix_ratio)
@@ -302,6 +303,11 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
         self.mu = mu
         self.top_p = top_p
         self.length_scale = length_scale
+        # 25Hz speech tokens per mora, calibration MEDIAN over the moe_speech train
+        # shards (scripts/calibrate_tokens_per_mora.py). p60=5.0 was tried for headroom
+        # and regressed both eval sets (fixed-length decoding suffers from surplus
+        # budget too); consumed by the CLI mora-based length rule
+        self.tokens_per_mora = tokens_per_mora
         # [M] embedding, independent parameter (see class docstring). Zeros here,
         # real init happens in init_mask_embedding() after checkpoint load.
         self.mask_emb = torch.nn.Parameter(torch.zeros(llm_input_size))
@@ -632,8 +638,15 @@ class DiffusionCosyVoice3LM(CosyVoice3LM):
             target_len = ceil(r * len(text_tokens) * length_scale)
         The paper defines r per CHARACTER of the prompt transcript; this API
         only receives token ids, so the token count is used as a stand-in
-        (deliberate deviation, to be replaced by a character-based rule at the
-        CLI integration in Phase 2). The ratio is only used when BOTH prompt
+        (deliberate deviation). For Japanese the CLI layer
+        (cosyvoice/cli/cosyvoice.py) overrides this rule by passing an explicit
+        mora-based target_len = ceil(mora_count(text) * tokens_per_mora *
+        length_scale); it has to be computed there because the raw segment text
+        never reaches this model layer — llm_job only forwards token ids, and
+        the written form (kanji) diverges from the spoken length. The
+        token-count rule below remains as the fallback when no mora count is
+        available (non-Japanese text, streaming input). The ratio is only used
+        when BOTH prompt
         sides are non-empty: without a prompt, and also when either side is
         empty (e.g. cross-lingual style calls passing a speech prompt without
         its transcript, where the ratio degenerates), a constant

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 import os
 import time
 from typing import Generator
@@ -22,6 +23,35 @@ from cosyvoice.cli.frontend import CosyVoiceFrontEnd
 from cosyvoice.cli.model import CosyVoiceModel, CosyVoice2Model, CosyVoice3Model
 from cosyvoice.utils.file_utils import logging
 from cosyvoice.utils.class_utils import get_model_type
+from cosyvoice.utils.ja_frontend import mora_count
+
+
+def _diffusion_target_len(llm, text):
+    """Mora-based speech token budget for DELTA-TTS diffusion LMs, else None.
+
+    Computed at the CLI layer because the raw segment text never reaches the
+    model layer (llm_job / inference_diffusion only see token ids), while the
+    duration of Japanese depends on the reading, not the written form (kanji
+    text length diverges from mora count, e.g. 二分半 = 3 chars / 5 morae).
+    Returns None for AR llms, non-str segments (streaming generators) and text
+    without countable morae, leaving the model's token-ratio fallback in charge.
+
+    NOTE the returned budget is passed through unclamped (inference_diffusion
+    never clamps an explicit target_len, unlike its own fallback rule which is
+    capped at max_token_text_ratio * n_text). mora_count strips inline control
+    tokens, but out-of-vocabulary Latin words inside Japanese text are spelled
+    out letter-by-letter by pyopenjtalk (e.g. 'XYZです' -> 11 morae); with
+    text_frontend=True the model receives the same spelled-out reading so the
+    budget stays consistent, while raw text (text_frontend=False) may get an
+    overestimated budget for such words. Accepted: rare in the Japanese
+    moe_speech use case.
+    """
+    if not isinstance(text, str) or not hasattr(llm, 'inference_diffusion'):
+        return None
+    mora = mora_count(text)
+    if mora <= 0:
+        return None
+    return math.ceil(mora * llm.tokens_per_mora * llm.length_scale)
 
 
 class CosyVoice:
@@ -82,7 +112,7 @@ class CosyVoice:
             model_input = self.frontend.frontend_sft(i, spk_id)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
+            for model_output in self.model.tts(**model_input, stream=stream, speed=speed, target_len=_diffusion_target_len(self.model.llm, i)):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output
@@ -96,7 +126,7 @@ class CosyVoice:
             model_input = self.frontend.frontend_zero_shot(i, prompt_text, prompt_wav, self.sample_rate, zero_shot_spk_id)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
+            for model_output in self.model.tts(**model_input, stream=stream, speed=speed, target_len=_diffusion_target_len(self.model.llm, i)):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output
@@ -107,7 +137,7 @@ class CosyVoice:
             model_input = self.frontend.frontend_cross_lingual(i, prompt_wav, self.sample_rate, zero_shot_spk_id)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
+            for model_output in self.model.tts(**model_input, stream=stream, speed=speed, target_len=_diffusion_target_len(self.model.llm, i)):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output
@@ -120,7 +150,7 @@ class CosyVoice:
             model_input = self.frontend.frontend_instruct(i, spk_id, instruct_text)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
+            for model_output in self.model.tts(**model_input, stream=stream, speed=speed, target_len=_diffusion_target_len(self.model.llm, i)):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output
@@ -179,7 +209,7 @@ class CosyVoice2(CosyVoice):
             model_input = self.frontend.frontend_instruct2(i, instruct_text, prompt_wav, self.sample_rate, zero_shot_spk_id)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
+            for model_output in self.model.tts(**model_input, stream=stream, speed=speed, target_len=_diffusion_target_len(self.model.llm, i)):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output

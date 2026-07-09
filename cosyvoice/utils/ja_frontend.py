@@ -35,6 +35,8 @@ _PUNC_MAP = {
 
 
 _CONTROL_TOKEN_PATTERN = re.compile(r'\[[^\]]*\]')
+# CV3-style inline special tokens (<|breath|>, <|endofprompt|> etc.)
+_SPECIAL_TOKEN_PATTERN = re.compile(r'<\|[^|]*\|>')
 
 
 def contains_japanese(text):
@@ -73,6 +75,44 @@ def ja_text_to_katakana(text):
     # punctuation attaches to the previous word, no space on either side
     text = re.sub(r' ?([、。！？]) ?', r'\1', text)
     return text
+
+
+# small kana merge into the previous mora (youon etc.) and count 0
+_SMALL_KANA = set('ャュョァィゥェォヮ')
+# mora-bearing characters of a katakana reading: katakana incl. ッ/ン, plus the long vowel mark ー
+_MORA_CHAR_PATTERN = re.compile(r'[ァ-ヺー]')
+
+
+def mora_count(text):
+    """Count morae of ``text`` via its katakana reading (pyopenjtalk).
+
+    Rules: one mora per kana including sokuon ッ, moraic ン and the long vowel
+    mark ー; small youon kana (ャュョァィゥェォヮ) merge into the previous mora and
+    count 0; spaces, punctuation and other symbols count 0. When the text
+    carries an '<|endofprompt|>' instruct prefix only the last segment is
+    counted (the instruct part is not spoken). Inline control tokens
+    ([breath], <|laughter|> etc.) are not spoken either and are stripped
+    before reading: pyopenjtalk would spell their Latin letters one by one.
+    Returns 0 when no reading is obtained (non-Japanese text etc.) so callers
+    can fall back to other length rules. Gated on contains_japanese first
+    because pyopenjtalk spells Latin text letter-by-letter, which would yield
+    a bogus non-zero count. Raises ImportError when pyopenjtalk is missing
+    (silently returning 0 would disable the mora rule with no trace).
+    """
+    if '<|endofprompt|>' in text:
+        text = text.split('<|endofprompt|>')[-1]
+    text = _CONTROL_TOKEN_PATTERN.sub(' ', text)
+    text = _SPECIAL_TOKEN_PATTERN.sub(' ', text)
+    if not contains_japanese(text):
+        return 0
+    try:
+        reading = ja_text_to_katakana(text)
+    except ImportError:
+        raise
+    except Exception:
+        # unreadable text: report 0 and let the caller fall back
+        return 0
+    return sum(1 for ch in reading if ch not in _SMALL_KANA and _MORA_CHAR_PATTERN.match(ch))
 
 
 def ja_normalize(text, split=True, token_max_n=80, token_min_n=60, merge_len=20):

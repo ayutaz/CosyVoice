@@ -36,6 +36,7 @@ num_steps: 16         # diffusion decoding steps T at inference
 mu: 0.3               # time-shift schedule parameter (== t_shift in the paper recipe)
 top_p: 0.8            # nucleus sampling p at diffusion inference
 length_scale: 1.0     # multiplier on the rule-based target length
+tokens_per_mora: 4.708 # 25Hz speech tokens per mora, calibration median (scripts/calibration_tokens_per_mora.json). p60=5.0 was tried and regressed BOTH eval sets (std20 0.187 / holdout 0.360 vs 0.134 / 0.164): fixed-length decoding is budget-sensitive in both directions
 
 llm: !new:cosyvoice.llm.diffusion_llm.DiffusionCosyVoice3LM
     llm_input_size: !ref <llm_input_size>
@@ -63,6 +64,7 @@ llm: !new:cosyvoice.llm.diffusion_llm.DiffusionCosyVoice3LM
     mu: !ref <mu>
     top_p: !ref <top_p>
     length_scale: !ref <length_scale>
+    tokens_per_mora: !ref <tokens_per_mora>
 
 # processor functions
 # NOTE waveform-free llm pipeline as in conf/cosyvoice3.yaml: speech tokens are

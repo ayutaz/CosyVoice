@@ -98,7 +98,7 @@ class CosyVoiceModel:
         input_names = ["x", "mask", "mu", "cond"]
         return {'min_shape': min_shape, 'opt_shape': opt_shape, 'max_shape': max_shape, 'input_names': input_names}
 
-    def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid):
+    def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid, target_len=None):
         cur_silent_token_num, max_silent_token_num = 0, 5
         with self.llm_context, torch.cuda.amp.autocast(self.fp16 is True and hasattr(self.llm, 'vllm') is False):
             if isinstance(text, Generator):
@@ -113,7 +113,12 @@ class CosyVoiceModel:
             else:
                 # DELTA-TTS diffusion LMs replace AR decoding with confidence-ordered
                 # parallel unmasking; the generator contract (yield token ints) is the same
-                llm_inference = getattr(self.llm, 'inference_diffusion', None) or self.llm.inference
+                llm_inference = getattr(self.llm, 'inference_diffusion', None)
+                if llm_inference is not None:
+                    # only the diffusion path accepts an externally computed target_len (AR .inference does not)
+                    extra_kwargs = {'target_len': target_len}
+                else:
+                    llm_inference, extra_kwargs = self.llm.inference, {}
                 token_generator = llm_inference(text=text.to(self.device),
                                                 text_len=torch.tensor([text.shape[1]], dtype=torch.int32).to(self.device),
                                                 prompt_text=prompt_text.to(self.device),
@@ -121,7 +126,8 @@ class CosyVoiceModel:
                                                 prompt_speech_token=llm_prompt_speech_token.to(self.device),
                                                 prompt_speech_token_len=torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(self.device),
                                                 embedding=llm_embedding.to(self.device),
-                                                uuid=uuid)
+                                                uuid=uuid,
+                                                **extra_kwargs)
             for i in token_generator:
                 if i in self.silent_tokens:
                     cur_silent_token_num += 1
@@ -189,7 +195,8 @@ class CosyVoiceModel:
             self.mel_overlap_dict[this_uuid] = torch.zeros(1, 80, 0)
             self.flow_cache_dict[this_uuid] = torch.zeros(1, 80, 0, 2)
         if source_speech_token.shape[1] == 0:
-            p = threading.Thread(target=self.llm_job, args=(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid))
+            # target_len: CLI-computed mora-based length for diffusion llms, None keeps the model-side rule
+            p = threading.Thread(target=self.llm_job, args=(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid, kwargs.get('target_len')))
         else:
             p = threading.Thread(target=self.vc_job, args=(source_speech_token, this_uuid))
         p.start()
@@ -340,7 +347,8 @@ class CosyVoice2Model(CosyVoiceModel):
             self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid] = [], False
             self.hift_cache_dict[this_uuid] = None
         if source_speech_token.shape[1] == 0:
-            p = threading.Thread(target=self.llm_job, args=(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid))
+            # target_len: CLI-computed mora-based length for diffusion llms, None keeps the model-side rule
+            p = threading.Thread(target=self.llm_job, args=(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid, kwargs.get('target_len')))
         else:
             p = threading.Thread(target=self.vc_job, args=(source_speech_token, this_uuid))
         p.start()
